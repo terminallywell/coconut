@@ -427,7 +427,10 @@ def main():
                     wandb_run.log(log_dict)
                     print("eval loss", total_loss / len(valid_loss_dataloader))
 
-        # val generation accuracy
+        # val generation accuracy (only at end of each stage)
+        if not ((epoch + 1) % configs.epochs_per_stage == 0 or configs.only_eval):
+            continue
+
         total_length = len(valid_gen_dataloader)
 
         pbar = tqdm(
