@@ -1,4 +1,4 @@
-# modified for 1 GPU
+# modified for 1 T4 GPU
 
 project: coconut
 save_path: YOUR_PATH_TO_SAVE_THE_MODEL
@@ -22,11 +22,11 @@ model_id: openai-community/gpt2
 load_model_path: YOUR_PATH_TO_COCONUT_CHECKPOINT
 seed: 0
 resume: 40
-bf16: True
+bf16: False
 train_path: data/prosqa_train.json
 val_path: data/prosqa_test.json
 reset_optimizer: True
-batch_size_training: 16
+batch_size_training: 8
 debug: False
 gradient_accumulation_steps: 1
 num_epochs: 50
