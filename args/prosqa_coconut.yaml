@@ -1,7 +1,7 @@
 # modified for 1 L4 GPU
 
 project: coconut
-save_path: /content/drive/MyDrive/10707/checkpoints/prosqa_coconut
+save_path: checkpoints/prosqa_coconut
 name: prosqa-coconut
 
 only_eval: False
