@@ -166,6 +166,7 @@ def _collect_per_pass_entropy(model, input_ids, attn_mask, labels, pos_ids,
                 position_ids=pos_ids[:, next_compute_range[0]:next_compute_range[1]],
                 output_hidden_states=True,
             )
+            hidden_states_offset = 0
         else:
             past_key_values = [
                 (k[:, :, :next_compute_range[0], :], v[:, :, :next_compute_range[0], :])
@@ -178,6 +179,7 @@ def _collect_per_pass_entropy(model, input_ids, attn_mask, labels, pos_ids,
                 past_key_values=past_key_values,
                 output_hidden_states=True,
             )
+            hidden_states_offset = next_compute_range[0]
 
         # Compute entropy at this pass
         last_logit = outputs.logits[0, -1, :]
