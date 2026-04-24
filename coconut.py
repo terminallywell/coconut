@@ -47,6 +47,7 @@ class Coconut(nn.Module):
         collect_hidden_states=False,
         halt_threshold=None,
         min_latent_steps=2,
+        halt_mode="pad",
         **kwargs,
     ):
         """
@@ -64,6 +65,11 @@ class Coconut(nn.Module):
                 entropy drops below this value (in nats). None = no halting.
             min_latent_steps: minimum number of latent passes before halting
                 is allowed. Default 2 (protects the critical first step).
+            halt_mode: how to handle remaining latent positions after halting.
+                "pad"  — include remaining positions in final pass with their
+                         current (uninformative) embeddings (original behavior).
+                "eot"  — skip directly to <|end-latent|> token, bypassing
+                         remaining latent positions entirely.
         """
 
         logits = []
@@ -217,8 +223,20 @@ class Coconut(nn.Module):
                 probs = torch.softmax(last_logit, dim=-1)
                 entropy = -(probs * probs.log().clamp(min=-1e9)).sum().item()
                 if entropy < halt_threshold:
-                    # extend next_compute_range to cover rest of sequence
-                    next_compute_range = (next_compute_range[0], input_ids.shape[1])
+                    if halt_mode == "eot":
+                        # find <|end-latent|> position and skip directly to it
+                        eot_positions = (
+                            input_ids[0] == self.end_latent_id
+                        ).nonzero()
+                        if len(eot_positions) > 0:
+                            eot_pos = eot_positions[0].item()
+                            next_compute_range = (eot_pos, input_ids.shape[1])
+                        else:
+                            # fallback to pad mode if end-latent not found
+                            next_compute_range = (next_compute_range[0], input_ids.shape[1])
+                    else:
+                        # pad mode: include remaining latent positions in final pass
+                        next_compute_range = (next_compute_range[0], input_ids.shape[1])
                     break
 
         # final pass
@@ -254,13 +272,7 @@ class Coconut(nn.Module):
             shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
         )
 
-        return Outputs(
-            loss=loss,
-            inputs_embeds=inputs_embeds,
-            logits=logits,
-            collected_hidden_states=collected_hidden_states,
-            n_latent_used=n_latent_used
-        )
+        return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits, collected_hidden_states=collected_hidden_states, n_latent_used=n_latent_used)
 
     def train(self):
         self.base_causallm.train()
@@ -279,6 +291,7 @@ class Coconut(nn.Module):
         noise_stats=None,
         halt_threshold=None,
         min_latent_steps=2,
+        halt_mode="pad",
         **kwargs
     ):
 
@@ -300,6 +313,7 @@ class Coconut(nn.Module):
             noise_stats=noise_stats,
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
+            halt_mode=halt_mode,
         )
         inputs_embeds = outputs.inputs_embeds
 

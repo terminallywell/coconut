@@ -124,19 +124,7 @@ def measure_entropy_distribution(model, tokenizer, data, device, n_samples=100):
         attn_mask = torch.ones_like(input_ids)
         pos_ids   = torch.arange(input_ids.shape[1], device=device).unsqueeze(0)
 
-        # Run forward with per-pass logit collection
-        # We re-implement a simplified version here to capture per-pass entropy
-        from coconut import Coconut
-        # Access the underlying forward but intercept logits per pass
-        # Simpler: run with halt_threshold=inf (never halts) and collect
-        outputs = model.forward(
-            input_ids, attn_mask, labels, pos_ids,
-            halt_threshold=float('inf'),  # never halts, but runs halt check
-            min_latent_steps=0,
-            collect_hidden_states=False,
-        )
-        # outputs.logits is concatenated across passes
-        # We need per-pass entropy — use a dedicated collection pass instead
+        # We need per-pass entropy — use a dedicated collection pass
         _collect_per_pass_entropy(model, input_ids, attn_mask, labels, pos_ids,
                                    entropies_by_pos)
 
@@ -178,7 +166,6 @@ def _collect_per_pass_entropy(model, input_ids, attn_mask, labels, pos_ids,
                 position_ids=pos_ids[:, next_compute_range[0]:next_compute_range[1]],
                 output_hidden_states=True,
             )
-            hidden_states_offset = 0
         else:
             past_key_values = [
                 (k[:, :, :next_compute_range[0], :], v[:, :, :next_compute_range[0], :])
@@ -191,7 +178,6 @@ def _collect_per_pass_entropy(model, input_ids, attn_mask, labels, pos_ids,
                 past_key_values=past_key_values,
                 output_hidden_states=True,
             )
-            hidden_states_offset = next_compute_range[0]
 
         # Compute entropy at this pass
         last_logit = outputs.logits[0, -1, :]
@@ -232,7 +218,7 @@ def _collect_per_pass_entropy(model, input_ids, attn_mask, labels, pos_ids,
 @torch.no_grad()
 def evaluate_with_threshold(
     model, tokenizer, data, device,
-    halt_threshold, min_latent_steps, desc="Eval"
+    halt_threshold, min_latent_steps, halt_mode="pad", desc="Eval"
 ):
     """
     Evaluate with a given halt_threshold. Returns accuracy, average latent
@@ -262,12 +248,10 @@ def evaluate_with_threshold(
             max_new_tokens=MAX_NEW_TOKENS,
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
+            halt_mode=halt_mode,
             synced_gpus=False,
         )
 
-        # n_latent_used is tracked in model.forward via gen_forward_cnt path
-        # We recover it from the forward call inside generate via outputs
-        # Since generate() calls forward() internally, we need to retrieve it.
         # Re-run forward briefly to get n_latent_used (cheap — no generation)
         labels  = input_ids.clone()
         pos_ids = torch.arange(input_ids.shape[1], device=device).unsqueeze(0)
@@ -275,6 +259,7 @@ def evaluate_with_threshold(
             input_ids, attn_mask, labels, pos_ids,
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
+            halt_mode=halt_mode,
         )
         n_used = fwd_out.n_latent_used
 
@@ -325,6 +310,9 @@ def main():
     parser.add_argument("--val-path",         default="data/gsm_valid.json")
     parser.add_argument("--output",           default="halting_results.json")
     parser.add_argument("--min-latent-steps", type=int, default=2)
+    parser.add_argument("--halt-mode",        default="eot", choices=["pad", "eot"],
+                        help="How to handle remaining latent positions after halting: "
+                             "'pad' keeps them in final pass; 'eot' skips to <|end-latent|>")
     parser.add_argument("--device",           default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed",             type=int, default=42)
     parser.add_argument("--skip-entropy-cal", action="store_true",
@@ -335,6 +323,7 @@ def main():
     torch.manual_seed(args.seed)
 
     print(f"Device: {args.device}")
+    print(f"Halt mode: {args.halt_mode}")
     print(f"Min latent steps before halting: {args.min_latent_steps}")
     print(f"Thresholds to sweep: {[t for t in THRESHOLDS if t is not None]}")
 
@@ -346,6 +335,7 @@ def main():
             "checkpoint":       args.checkpoint,
             "val_path":         args.val_path,
             "n_latent":         N_LATENT,
+            "halt_mode":        args.halt_mode,
             "min_latent_steps": args.min_latent_steps,
             "thresholds":       [t for t in THRESHOLDS if t is not None],
             "timestamp":        datetime.now().isoformat(),
@@ -378,16 +368,18 @@ def main():
             model, tokenizer, data, args.device,
             halt_threshold=threshold,
             min_latent_steps=args.min_latent_steps,
+            halt_mode=args.halt_mode,
             desc=desc,
         )
         results["thresholds"][label] = {
             "threshold": threshold,
+            "halt_mode": args.halt_mode,
             **result,
         }
 
-        acc      = result["accuracy"]
-        avg_lat  = result["avg_latent_used"]
-        saved    = (N_LATENT - avg_lat) / N_LATENT * 100
+        acc     = result["accuracy"]
+        avg_lat = result["avg_latent_used"]
+        saved   = (N_LATENT - avg_lat) / N_LATENT * 100
         print(f"  Accuracy: {acc*100:.1f}%  |  "
               f"Avg latent used: {avg_lat:.2f}/{N_LATENT}  |  "
               f"Compute saved: {saved:.1f}%")
@@ -397,12 +389,12 @@ def main():
 
     # Summary table
     print("\n" + "=" * 65)
-    print("SUMMARY: Accuracy vs. Compute Tradeoff")
+    print(f"SUMMARY [{args.halt_mode}]: Accuracy vs. Compute Tradeoff")
     print("=" * 65)
     print(f"{'Threshold':>12}  {'Accuracy':>10}  {'Avg Latent':>11}  {'Saved':>7}")
     print("-" * 65)
     for label, r in results["thresholds"].items():
-        t    = r["threshold"]
+        t     = r["threshold"]
         t_str = "None" if t is None else f"{t:.3f}"
         saved = (N_LATENT - r["avg_latent_used"]) / N_LATENT * 100
         print(f"{t_str:>12}  {r['accuracy']*100:>9.1f}%  "
