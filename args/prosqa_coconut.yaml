@@ -1,4 +1,4 @@
-# modified for 1 L4 GPU
+# modified for 4 A10G GPU
 
 project: coconut
 save_path: /content/drive/MyDrive/10707/checkpoints/prosqa_coconut
@@ -26,9 +26,9 @@ bf16: True
 train_path: data/prosqa_train.json
 val_path: data/prosqa_valid.json
 reset_optimizer: True
-batch_size_training: 8
+batch_size_training: 32
 debug: False
-gradient_accumulation_steps: 16
+gradient_accumulation_steps: 1
 num_epochs: 50
 lr: !!float "1e-4"
 weight_decay: 0.01

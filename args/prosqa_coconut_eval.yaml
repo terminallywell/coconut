@@ -1,4 +1,4 @@
-# modified for 1 L4 GPU
+# modified for 4 A10G GPU
 
 project: coconut
 save_path: YOUR_PATH_TO_SAVE_THE_MODEL
@@ -26,7 +26,7 @@ bf16: True
 train_path: data/prosqa_train.json
 val_path: data/prosqa_test.json
 reset_optimizer: True
-batch_size_training: 16
+batch_size_training: 32
 debug: False
 gradient_accumulation_steps: 1
 num_epochs: 50
