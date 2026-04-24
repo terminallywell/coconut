@@ -7,7 +7,7 @@ from torch.nn import CrossEntropyLoss
 from collections import namedtuple
 from transformers.models.gpt2 import GPT2LMHeadModel
 
-Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits"])
+Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits", "collected_hidden_states"])
 MAX_N_LATENT = 8
 
 
@@ -36,9 +36,32 @@ class Coconut(nn.Module):
         else:
             self.embedding = self.base_causallm.get_input_embeddings()
 
-    def forward(self, input_ids, attention_mask, labels, position_ids, **kwargs):
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        labels,
+        position_ids,
+        corrupt_positions=None,
+        noise_stats=None,
+        collect_hidden_states=False,
+        **kwargs,
+    ):
+        """
+        Args:
+            corrupt_positions: set of pass_idx values (0-indexed) whose hidden
+                states should be replaced with calibrated Gaussian noise before
+                being injected as the next latent thought embedding.
+            noise_stats: list of (mean, std) tensors, one per latent position,
+                used to calibrate the corruption noise. If None and
+                corrupt_positions is set, unit Gaussian noise is used.
+            collect_hidden_states: if True, also return a list of per-position
+                hidden state tensors (before any corruption) via Outputs.
+                Used for calibration runs.
+        """
 
         logits = []
+        collected_hidden_states = []  # populated when collect_hidden_states=True
 
         latent_indices = (
             input_ids == self.latent_token_id
@@ -144,10 +167,29 @@ class Coconut(nn.Module):
             for idx_pair in filling_indices:
                 batch_idx, token_idx = idx_pair
 
-                # replace it with the preceding last hidden states
-                tensor_list[batch_idx][token_idx] = hidden_states[
+                # the clean hidden state that would be injected
+                clean_h = hidden_states[
                     batch_idx, token_idx - 1 - hidden_states_offset, :
                 ]
+
+                # optionally collect before any corruption (for calibration)
+                if collect_hidden_states and batch_idx == 0:
+                    collected_hidden_states.append(clean_h.detach().cpu())
+
+                # corruption: replace with calibrated Gaussian noise
+                if corrupt_positions is not None and pass_idx in corrupt_positions:
+                    if noise_stats is not None and pass_idx < len(noise_stats):
+                        mean, std = noise_stats[pass_idx]
+                        mean = mean.to(clean_h.device)
+                        std = std.to(clean_h.device)
+                        noise = torch.randn_like(clean_h) * std + mean
+                    else:
+                        # fallback: unit Gaussian (uncalibrated)
+                        noise = torch.randn_like(clean_h)
+                    tensor_list[batch_idx][token_idx] = noise
+                else:
+                    # replace it with the preceding last hidden states (normal)
+                    tensor_list[batch_idx][token_idx] = clean_h
 
             # assemble the new inputs_embeds
             inputs_embeds = torch.stack(
@@ -190,7 +232,7 @@ class Coconut(nn.Module):
             shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
         )
 
-        return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits)
+        return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits, collected_hidden_states=collected_hidden_states)
 
     def train(self):
         self.base_causallm.train()
@@ -205,6 +247,8 @@ class Coconut(nn.Module):
         max_new_tokens=16,
         output_embedding=False,
         synced_gpus=False,
+        corrupt_positions=None,
+        noise_stats=None,
         **kwargs
     ):
 
@@ -222,6 +266,8 @@ class Coconut(nn.Module):
             torch.arange(
                 0, input_ids.shape[1], dtype=torch.long, device=input_ids.device
             ).reshape(1, -1),
+            corrupt_positions=corrupt_positions,
+            noise_stats=noise_stats,
         )
         inputs_embeds = outputs.inputs_embeds
 
