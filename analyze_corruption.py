@@ -42,11 +42,11 @@ N_LATENT = 6          # c_thought=2, max_latent_stage=3 → 3*2 = 6
 MODEL_ID = "openai-community/gpt2"
 MAX_NEW_TOKENS = 100  # matches run.py default for GSM8K
 
-DIFFICULTY_BUCKETS = {
-    "easy":   (1, 2),
-    "medium": (3, 4),
-    "hard":   (5, 99),
-}
+# DIFFICULTY_BUCKETS = {
+#     "easy":   (1, 2),
+#     "medium": (3, 4),
+#     "hard":   (5, 99),
+# }
 
 
 # ---------------------------------------------------------------------------
@@ -226,10 +226,10 @@ def evaluate(
         correct = int(pred == answer)
         correct_total += correct
 
-        # bucket by difficulty
-        bucket = difficulty_bucket(n_steps)
-        correct_by_diff[bucket] += correct
-        total_by_diff[bucket]   += 1
+        # group by # golden steps
+        k = n_steps
+        correct_by_diff[k] += correct
+        total_by_diff[k]   += 1
 
     n = len(data)
     result = {
@@ -237,23 +237,23 @@ def evaluate(
         "n_correct":   correct_total,
         "n_total":     n,
         "by_difficulty": {
-            bkt: {
-                "accuracy": correct_by_diff[bkt] / total_by_diff[bkt]
-                            if total_by_diff[bkt] > 0 else None,
-                "n_correct": correct_by_diff[bkt],
-                "n_total":   total_by_diff[bkt],
+            str(k): {
+                "accuracy": correct_by_diff[k] / total_by_diff[k]
+                            if total_by_diff[k] > 0 else None,
+                "n_correct": correct_by_diff[k],
+                "n_total":   total_by_diff[k],
             }
-            for bkt in ["easy", "medium", "hard"]
+            for k in sorted(total_by_diff.keys())
         },
     }
     return result
 
 
-def difficulty_bucket(n_steps: int) -> str:
-    for bkt, (lo, hi) in DIFFICULTY_BUCKETS.items():
-        if lo <= n_steps <= hi:
-            return bkt
-    return "hard"
+# def difficulty_bucket(n_steps: int) -> str:
+#     for bkt, (lo, hi) in DIFFICULTY_BUCKETS.items():
+#         if lo <= n_steps <= hi:
+#             return bkt
+#     return "hard"
 
 
 # ---------------------------------------------------------------------------
