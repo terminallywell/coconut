@@ -232,11 +232,12 @@ def _collect_per_pass_entropy(model, input_ids, attn_mask, labels, pos_ids,
 @torch.no_grad()
 def evaluate_with_threshold(
     model, tokenizer, data, device,
-    halt_threshold, min_latent_steps, desc="Eval"
+    halt_threshold, min_latent_steps,
+    halting_head=None, desc="Eval"
 ):
     """
-    Evaluate with a given halt_threshold. Returns accuracy, average latent
-    steps used, and per-step-count breakdown.
+    Evaluate with a given halt_threshold or halting_head. Returns accuracy,
+    average latent steps used, and per-step-count breakdown.
     """
     latent_id = tokenizer.convert_tokens_to_ids("<|latent|>")
     start_id  = tokenizer.convert_tokens_to_ids("<|start-latent|>")
@@ -262,19 +263,18 @@ def evaluate_with_threshold(
             max_new_tokens=MAX_NEW_TOKENS,
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
+            halting_head=halting_head,
             synced_gpus=False,
         )
 
-        # n_latent_used is tracked in model.forward via gen_forward_cnt path
-        # We recover it from the forward call inside generate via outputs
-        # Since generate() calls forward() internally, we need to retrieve it.
-        # Re-run forward briefly to get n_latent_used (cheap — no generation)
+        # second forward pass to get n_latent_used
         labels  = input_ids.clone()
         pos_ids = torch.arange(input_ids.shape[1], device=device).unsqueeze(0)
         fwd_out = model.forward(
             input_ids, attn_mask, labels, pos_ids,
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
+            halting_head=halting_head,
         )
         n_used = fwd_out.n_latent_used
 
@@ -325,6 +325,10 @@ def main():
     parser.add_argument("--val-path",         default="data/gsm_valid.json")
     parser.add_argument("--output",           default="halting_results.json")
     parser.add_argument("--min-latent-steps", type=int, default=2)
+    parser.add_argument("--halt-head",        default=None,
+                        help="Path to trained halting head checkpoint (.pt). "
+                             "If provided, runs a single eval with the learned head "
+                             "instead of the entropy threshold sweep.")
     parser.add_argument("--device",           default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed",             type=int, default=42)
     parser.add_argument("--skip-entropy-cal", action="store_true",
@@ -336,76 +340,109 @@ def main():
 
     print(f"Device: {args.device}")
     print(f"Min latent steps before halting: {args.min_latent_steps}")
-    print(f"Thresholds to sweep: {[t for t in THRESHOLDS if t is not None]}")
 
     model, tokenizer = load_model(args.checkpoint, args.device)
     data = load_val_data(args.val_path)
+
+    # --- Load halting head if provided ---
+    halting_head = None
+    if args.halt_head is not None:
+        from train_halt_head import HaltingHead
+        halting_head = HaltingHead().to(args.device)
+        halting_head.load_state_dict(torch.load(args.halt_head, map_location=args.device))
+        halting_head.eval()
+        print(f"Loaded halting head from {args.halt_head}")
 
     results = {
         "metadata": {
             "checkpoint":       args.checkpoint,
             "val_path":         args.val_path,
             "n_latent":         N_LATENT,
+            "halt_head":        args.halt_head,
             "min_latent_steps": args.min_latent_steps,
-            "thresholds":       [t for t in THRESHOLDS if t is not None],
             "timestamp":        datetime.now().isoformat(),
         },
         "entropy_distribution": {},
         "thresholds": {},
     }
 
-    # Entropy distribution calibration
-    if not args.skip_entropy_cal:
-        ent_dist = measure_entropy_distribution(model, tokenizer, data, args.device)
-        results["entropy_distribution"] = {
-            str(pos): {
-                "mean": float(np.mean(ent_dist[pos])),
-                "p10":  float(np.percentile(ent_dist[pos], 10)),
-                "p50":  float(np.percentile(ent_dist[pos], 50)),
-                "p90":  float(np.percentile(ent_dist[pos], 90)),
-            }
-            for pos in range(N_LATENT) if ent_dist[pos]
-        }
-
-    # Sweep thresholds
-    for threshold in THRESHOLDS:
-        label = "no_halt" if threshold is None else f"thresh_{threshold}"
-        desc  = "No halting (baseline)" if threshold is None \
-                else f"Threshold {threshold:.3f} nats"
-
-        print(f"\n--- {desc} ---")
+    if halting_head is not None:
+        # --- Single eval with learned halting head ---
+        print(f"\n--- Learned halting head ---")
         result = evaluate_with_threshold(
             model, tokenizer, data, args.device,
-            halt_threshold=threshold,
+            halt_threshold=None,
             min_latent_steps=args.min_latent_steps,
-            desc=desc,
+            halting_head=halting_head,
+            desc="Learned halting head",
         )
-        results["thresholds"][label] = {
-            "threshold": threshold,
+        results["thresholds"]["halt_head"] = {
+            "threshold": None,
+            "halt_mode": "learned",
             **result,
         }
-
-        acc      = result["accuracy"]
-        avg_lat  = result["avg_latent_used"]
-        saved    = (N_LATENT - avg_lat) / N_LATENT * 100
+        acc     = result["accuracy"]
+        avg_lat = result["avg_latent_used"]
+        saved   = (N_LATENT - avg_lat) / N_LATENT * 100
         print(f"  Accuracy: {acc*100:.1f}%  |  "
               f"Avg latent used: {avg_lat:.2f}/{N_LATENT}  |  "
               f"Compute saved: {saved:.1f}%")
 
-        with open(args.output, "w") as f:
-            json.dump(results, f, indent=2)
+    else:
+        # --- Entropy threshold sweep ---
+        print(f"Thresholds to sweep: {[t for t in THRESHOLDS if t is not None]}")
 
-    # Summary table
+        if not args.skip_entropy_cal:
+            ent_dist = measure_entropy_distribution(model, tokenizer, data, args.device)
+            results["entropy_distribution"] = {
+                str(pos): {
+                    "mean": float(np.mean(ent_dist[pos])),
+                    "p10":  float(np.percentile(ent_dist[pos], 10)),
+                    "p50":  float(np.percentile(ent_dist[pos], 50)),
+                    "p90":  float(np.percentile(ent_dist[pos], 90)),
+                }
+                for pos in range(N_LATENT) if ent_dist[pos]
+            }
+
+        for threshold in THRESHOLDS:
+            label = "no_halt" if threshold is None else f"thresh_{threshold}"
+            desc  = "No halting (baseline)" if threshold is None \
+                    else f"Threshold {threshold:.3f} nats"
+
+            print(f"\n--- {desc} ---")
+            result = evaluate_with_threshold(
+                model, tokenizer, data, args.device,
+                halt_threshold=threshold,
+                min_latent_steps=args.min_latent_steps,
+                desc=desc,
+            )
+            results["thresholds"][label] = {
+                "threshold": threshold,
+                **result,
+            }
+
+            acc     = result["accuracy"]
+            avg_lat = result["avg_latent_used"]
+            saved   = (N_LATENT - avg_lat) / N_LATENT * 100
+            print(f"  Accuracy: {acc*100:.1f}%  |  "
+                  f"Avg latent used: {avg_lat:.2f}/{N_LATENT}  |  "
+                  f"Compute saved: {saved:.1f}%")
+
+            with open(args.output, "w") as f:
+                json.dump(results, f, indent=2)
+
+    # Final save and summary
+    with open(args.output, "w") as f:
+        json.dump(results, f, indent=2)
+
     print("\n" + "=" * 65)
     print("SUMMARY: Accuracy vs. Compute Tradeoff")
     print("=" * 65)
-    print(f"{'Threshold':>12}  {'Accuracy':>10}  {'Avg Latent':>11}  {'Saved':>7}")
+    print(f"{'Label':>20}  {'Accuracy':>10}  {'Avg Latent':>11}  {'Saved':>7}")
     print("-" * 65)
     for label, r in results["thresholds"].items():
-        t    = r["threshold"]
-        t_str = "None" if t is None else f"{t:.3f}"
         saved = (N_LATENT - r["avg_latent_used"]) / N_LATENT * 100
-        print(f"{t_str:>12}  {r['accuracy']*100:>9.1f}%  "
+        print(f"{label:>20}  {r['accuracy']*100:>9.1f}%  "
               f"{r['avg_latent_used']:>9.2f}/{N_LATENT}  "
               f"{saved:>6.1f}%")
 

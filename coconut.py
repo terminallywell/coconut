@@ -47,6 +47,7 @@ class Coconut(nn.Module):
         collect_hidden_states=False,
         halt_threshold=None,
         min_latent_steps=2,
+        halting_head=None,
         **kwargs,
     ):
         """
@@ -64,6 +65,10 @@ class Coconut(nn.Module):
                 entropy drops below this value (in nats). None = no halting.
             min_latent_steps: minimum number of latent passes before halting
                 is allowed. Default 2 (protects the critical first step).
+            halting_head: optional nn.Module that takes a hidden state tensor
+                of shape (hidden_size,) and returns a halt probability scalar.
+                If p_halt > 0.5 and pass_idx >= min_latent_steps, halts early.
+                Takes priority over halt_threshold if both are provided.
         """
 
         logits = []
@@ -208,16 +213,30 @@ class Coconut(nn.Module):
 
             n_latent_used = pass_idx + 1
 
-            # early halting: stop if next-token entropy is below threshold
-            if (
-                halt_threshold is not None
-                and pass_idx >= min_latent_steps - 1
-            ):
-                last_logit = outputs.logits[0, -1, :]
-                probs = torch.softmax(last_logit, dim=-1)
-                entropy = -(probs * probs.log().clamp(min=-1e9)).sum().item()
-                if entropy < halt_threshold:
-                    # extend next_compute_range to cover rest of sequence
+            # early halting — checked after min_latent_steps completed
+            if pass_idx >= min_latent_steps - 1:
+                should_halt = False
+
+                if halting_head is not None:
+                    # extract hidden state for batch_idx=0 explicitly
+                    # (generate() asserts batch_size=1)
+                    tok_idx_0 = latent_lists[0][pass_idx]
+                    h_for_head = hidden_states[
+                        0, tok_idx_0 - 1 - hidden_states_offset, :
+                    ].unsqueeze(0)
+                    with torch.no_grad():
+                        p_halt = halting_head(h_for_head).item()
+                    should_halt = p_halt > 0.5
+
+                elif halt_threshold is not None:
+                    # entropy-based fallback
+                    last_logit = outputs.logits[0, -1, :]
+                    probs = torch.softmax(last_logit, dim=-1)
+                    entropy = -(probs * probs.log().clamp(min=-1e9)).sum().item()
+                    should_halt = entropy < halt_threshold
+
+                if should_halt:
+                    # pad mode: include remaining latent positions in final pass
                     next_compute_range = (next_compute_range[0], input_ids.shape[1])
                     break
 
@@ -279,6 +298,7 @@ class Coconut(nn.Module):
         noise_stats=None,
         halt_threshold=None,
         min_latent_steps=2,
+        halting_head=None,
         **kwargs
     ):
 
@@ -300,6 +320,7 @@ class Coconut(nn.Module):
             noise_stats=noise_stats,
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
+            halting_head=halting_head,
         )
         inputs_embeds = outputs.inputs_embeds
 
