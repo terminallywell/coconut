@@ -292,6 +292,7 @@ class Coconut(nn.Module):
         halt_threshold=None,
         min_latent_steps=2,
         halt_mode="pad",
+        return_n_latent=False,
         **kwargs
     ):
 
@@ -316,6 +317,7 @@ class Coconut(nn.Module):
             halt_mode=halt_mode,
         )
         inputs_embeds = outputs.inputs_embeds
+        n_latent_used = outputs.n_latent_used
 
         # get the first token using the current hidden state
         next_token = torch.argmax(outputs.logits[0, -1]).item()
@@ -346,9 +348,13 @@ class Coconut(nn.Module):
                 self.gen_forward_cnt += 1
                 _ = self.base_causallm(inputs_embeds=new_inputs_embeds)
 
-        if output_embedding:
-            # for analysis purpose
-            return torch.tensor(tokens).view(1, -1), new_inputs_embeds
+        token_tensor = torch.tensor(tokens).view(1, -1)
 
+        if output_embedding and return_n_latent:
+            return token_tensor, new_inputs_embeds, n_latent_used
+        elif output_embedding:
+            return token_tensor, new_inputs_embeds
+        elif return_n_latent:
+            return token_tensor, n_latent_used
         else:
-            return torch.tensor(tokens).view(1, -1)
+            return token_tensor

@@ -244,26 +244,16 @@ def evaluate_with_threshold(
                                  latent_id, start_id, end_id)
         attn_mask = torch.ones_like(input_ids)
 
-        out_tokens = model.generate(
+        out_tokens, n_used = model.generate(
             input_ids,
             attn_mask,
             max_new_tokens=MAX_NEW_TOKENS,
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
             halt_mode=halt_mode,
+            return_n_latent=True,
             synced_gpus=False,
         )
-
-        # Re-run forward briefly to get n_latent_used (cheap — no generation)
-        labels  = input_ids.clone()
-        pos_ids = torch.arange(input_ids.shape[1], device=device).unsqueeze(0)
-        fwd_out = model.forward(
-            input_ids, attn_mask, labels, pos_ids,
-            halt_threshold=halt_threshold,
-            min_latent_steps=min_latent_steps,
-            halt_mode=halt_mode,
-        )
-        n_used = fwd_out.n_latent_used
 
         text = tokenizer.decode(out_tokens[0], skip_special_tokens=True)
         pred = extract_answer(text)
