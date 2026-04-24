@@ -7,7 +7,7 @@ from torch.nn import CrossEntropyLoss
 from collections import namedtuple
 from transformers.models.gpt2 import GPT2LMHeadModel
 
-Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits", "collected_hidden_states"])
+Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits", "collected_hidden_states", "n_latent_used"])
 MAX_N_LATENT = 8
 
 
@@ -45,6 +45,8 @@ class Coconut(nn.Module):
         corrupt_positions=None,
         noise_stats=None,
         collect_hidden_states=False,
+        halt_threshold=None,
+        min_latent_steps=2,
         **kwargs,
     ):
         """
@@ -58,10 +60,15 @@ class Coconut(nn.Module):
             collect_hidden_states: if True, also return a list of per-position
                 hidden state tensors (before any corruption) via Outputs.
                 Used for calibration runs.
+            halt_threshold: if set, stop latent passes early when next-token
+                entropy drops below this value (in nats). None = no halting.
+            min_latent_steps: minimum number of latent passes before halting
+                is allowed. Default 2 (protects the critical first step).
         """
 
         logits = []
         collected_hidden_states = []  # populated when collect_hidden_states=True
+        n_latent_used = 0             # tracks how many latent passes were executed
 
         latent_indices = (
             input_ids == self.latent_token_id
@@ -199,6 +206,21 @@ class Coconut(nn.Module):
                 ]
             )
 
+            n_latent_used = pass_idx + 1
+
+            # early halting: stop if next-token entropy is below threshold
+            if (
+                halt_threshold is not None
+                and pass_idx >= min_latent_steps - 1
+            ):
+                last_logit = outputs.logits[0, -1, :]
+                probs = torch.softmax(last_logit, dim=-1)
+                entropy = -(probs * probs.log().clamp(min=-1e9)).sum().item()
+                if entropy < halt_threshold:
+                    # extend next_compute_range to cover rest of sequence
+                    next_compute_range = (next_compute_range[0], input_ids.shape[1])
+                    break
+
         # final pass
         outputs = self.base_causallm(
             inputs_embeds=inputs_embeds[
@@ -232,7 +254,13 @@ class Coconut(nn.Module):
             shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
         )
 
-        return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits, collected_hidden_states=collected_hidden_states)
+        return Outputs(
+            loss=loss,
+            inputs_embeds=inputs_embeds,
+            logits=logits,
+            collected_hidden_states=collected_hidden_states,
+            n_latent_used=n_latent_used
+        )
 
     def train(self):
         self.base_causallm.train()
@@ -249,6 +277,8 @@ class Coconut(nn.Module):
         synced_gpus=False,
         corrupt_positions=None,
         noise_stats=None,
+        halt_threshold=None,
+        min_latent_steps=2,
         **kwargs
     ):
 
@@ -268,6 +298,8 @@ class Coconut(nn.Module):
             ).reshape(1, -1),
             corrupt_positions=corrupt_positions,
             noise_stats=noise_stats,
+            halt_threshold=halt_threshold,
+            min_latent_steps=min_latent_steps,
         )
         inputs_embeds = outputs.inputs_embeds
 

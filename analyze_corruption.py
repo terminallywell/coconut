@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Corruption analysis for Coconut GSM8K checkpoint.
+Experiment A: Corruption analysis for Coconut GSM8K checkpoint.
 
 Measures accuracy under progressive, single-position, and intra-step
 corruption of latent thought positions. Results are stratified by
