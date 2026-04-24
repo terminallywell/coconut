@@ -22,7 +22,7 @@ model_id: openai-community/gpt2
 load_model_path: YOUR_PATH_TO_COT_CHECKPOINT
 seed: 0
 resume: 3
-bf16: False
+bf16: True
 train_path: data/gsm_train.json
 val_path: data/gsm_valid.json
 reset_optimizer: True
