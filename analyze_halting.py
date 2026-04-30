@@ -233,7 +233,7 @@ def _collect_per_pass_entropy(model, input_ids, attn_mask, labels, pos_ids,
 def evaluate_with_threshold(
     model, tokenizer, data, device,
     halt_threshold, min_latent_steps,
-    halting_head=None, desc="Eval"
+    halting_head=None, halt_head_threshold=0.5, desc="Eval"
 ):
     """
     Evaluate with a given halt_threshold or halting_head. Returns accuracy,
@@ -264,6 +264,7 @@ def evaluate_with_threshold(
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
             halting_head=halting_head,
+            halt_head_threshold=halt_head_threshold,
             synced_gpus=False,
         )
 
@@ -275,6 +276,7 @@ def evaluate_with_threshold(
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
             halting_head=halting_head,
+            halt_head_threshold=halt_head_threshold,
         )
         n_used = fwd_out.n_latent_used
 
@@ -367,26 +369,35 @@ def main():
     }
 
     if halting_head is not None:
-        # --- Single eval with learned halting head ---
-        print(f"\n--- Learned halting head ---")
-        result = evaluate_with_threshold(
-            model, tokenizer, data, args.device,
-            halt_threshold=None,
-            min_latent_steps=args.min_latent_steps,
-            halting_head=halting_head,
-            desc="Learned halting head",
-        )
-        results["thresholds"]["halt_head"] = {
-            "threshold": None,
-            "halt_mode": "learned",
-            **result,
-        }
-        acc     = result["accuracy"]
-        avg_lat = result["avg_latent_used"]
-        saved   = (N_LATENT - avg_lat) / N_LATENT * 100
-        print(f"  Accuracy: {acc*100:.1f}%  |  "
-              f"Avg latent used: {avg_lat:.2f}/{N_LATENT}  |  "
-              f"Compute saved: {saved:.1f}%")
+        # --- Sweep halt head decision thresholds ---
+        head_thresholds = np.arange(0.1, 1, 0.05)
+        print(f"Halt head probability threshold sweep")
+
+        for ht in head_thresholds:
+            label = f"halt_head_t{ht:.2f}"
+            desc  = f"Learned head (threshold={ht:.2f})"
+            print(f"\n--- {desc} ---")
+            result = evaluate_with_threshold(
+                model, tokenizer, data, args.device,
+                halt_threshold=None,
+                min_latent_steps=args.min_latent_steps,
+                halting_head=halting_head,
+                halt_head_threshold=ht,
+                desc=desc,
+            )
+            results["thresholds"][label] = {
+                "threshold":           ht,
+                "halt_mode":           "learned",
+                **result,
+            }
+            acc     = result["accuracy"]
+            avg_lat = result["avg_latent_used"]
+            saved   = (N_LATENT - avg_lat) / N_LATENT * 100
+            print(f"  Accuracy: {acc*100:.1f}%  |  "
+                  f"Avg latent used: {avg_lat:.2f}/{N_LATENT}  |  "
+                  f"Steps saved: {saved:.1f}%")
+            with open(args.output, "w") as f:
+                json.dump(results, f, indent=2)
 
     else:
         # --- Entropy threshold sweep ---

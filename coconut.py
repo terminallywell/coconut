@@ -48,6 +48,7 @@ class Coconut(nn.Module):
         halt_threshold=None,
         min_latent_steps=2,
         halting_head=None,
+        halting_head_threshold=0.5,
         **kwargs,
     ):
         """
@@ -226,7 +227,7 @@ class Coconut(nn.Module):
                     ].unsqueeze(0)
                     with torch.no_grad():
                         p_halt = halting_head(h_for_head).item()
-                    should_halt = p_halt > 0.5
+                    should_halt = p_halt > halting_head_threshold
 
                 elif halt_threshold is not None:
                     # entropy-based fallback
@@ -299,6 +300,7 @@ class Coconut(nn.Module):
         halt_threshold=None,
         min_latent_steps=2,
         halting_head=None,
+        halt_head_threshold=0.5,
         **kwargs
     ):
 
@@ -321,6 +323,7 @@ class Coconut(nn.Module):
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
             halting_head=halting_head,
+            halting_head_threshold=halt_head_threshold,
         )
         inputs_embeds = outputs.inputs_embeds
 
