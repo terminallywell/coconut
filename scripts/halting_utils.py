@@ -6,8 +6,8 @@ and the core evaluate_with_threshold function used by both analyze_entropy.py
 and analyze_learned.py.
 """
 
-import json
 import sys
+import json
 from pathlib import Path
 from collections import defaultdict
 
@@ -15,6 +15,10 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from coconut import Coconut
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -30,9 +34,6 @@ MAX_NEW_TOKENS = 100
 # ---------------------------------------------------------------------------
 
 def load_model(checkpoint_path: str, device: str) -> tuple:
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from coconut import Coconut
-
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.add_tokens("<|start-latent|>")
@@ -72,8 +73,7 @@ def load_val_data(val_path: str) -> list:
     return data
 
 
-def build_prompt(sample: dict, tokenizer, device: str,
-                 latent_id: int, start_id: int, end_id: int) -> torch.Tensor:
+def build_prompt(sample: dict, tokenizer, device: str, latent_id: int, start_id: int, end_id: int) -> torch.Tensor:
     question = sample["question"].strip()
     latent_block = [start_id] + [latent_id] * N_LATENT + [end_id]
     q_ids = tokenizer.encode(question, add_special_tokens=False)
@@ -121,8 +121,7 @@ def evaluate_with_threshold(
         n_steps = len(sample["steps"])
         answer  = sample["answer"].replace(",", "").strip()
 
-        input_ids = build_prompt(sample, tokenizer, device,
-                                 latent_id, start_id, end_id)
+        input_ids = build_prompt(sample, tokenizer, device, latent_id, start_id, end_id)
         attn_mask = torch.ones_like(input_ids)
 
         out_tokens, n_used = model.generate(
@@ -161,12 +160,11 @@ def evaluate_with_threshold(
         },
         "by_steps": {
             str(k): {
-                "accuracy":        correct_by_steps[k] / total_by_steps[k]
-                                   if total_by_steps[k] > 0 else None,
-                "n_correct":       correct_by_steps[k],
-                "n_total":         total_by_steps[k],
-                "avg_latent_used": float(np.mean(latent_by_steps[k]))
-                                   if latent_by_steps[k] else None,
+                "accuracy": correct_by_steps[k] / total_by_steps[k]
+                            if total_by_steps[k] > 0 else None,
+                "n_correct": correct_by_steps[k],
+                "n_total": total_by_steps[k],
+                "avg_latent_used": float(np.mean(latent_by_steps[k])) if latent_by_steps[k] else None,
             }
             for k in sorted(total_by_steps.keys())
         },

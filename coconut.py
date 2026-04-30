@@ -218,7 +218,7 @@ class Coconut(nn.Module):
 
             n_latent_used = pass_idx + 1
 
-            # early halting — checked after min_latent_steps completed
+            # early halting: checked after min_latent_steps completed
             if pass_idx >= min_latent_steps - 1:
                 should_halt = False
 
@@ -226,9 +226,7 @@ class Coconut(nn.Module):
                     # extract hidden state for batch_idx=0 explicitly
                     # (generate() asserts batch_size=1)
                     tok_idx_0 = latent_lists[0][pass_idx]
-                    h_for_head = hidden_states[
-                        0, tok_idx_0 - 1 - hidden_states_offset, :
-                    ].unsqueeze(0)
+                    h_for_head = hidden_states[0, tok_idx_0 - 1 - hidden_states_offset, :].unsqueeze(0)
                     with torch.no_grad():
                         p_halt = halting_head(h_for_head).item()
                     should_halt = p_halt > halting_head_threshold
@@ -390,5 +388,5 @@ class HaltingHead(nn.Module):
         )
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
-        """h: (batch, hidden_size) → (batch, 1) halt probability"""
+        """h: (batch, hidden_size) -> (batch, 1) halt probability"""
         return self.net(h)

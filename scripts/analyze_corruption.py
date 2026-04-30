@@ -6,7 +6,7 @@ Measures accuracy under single-position and cumulative corruption of latent
 thought positions. Results are stratified by problem difficulty (number of
 gold reasoning steps).
 
-Usage (run from repo root with coconut env active):
+Usage:
     python scripts/analyze_corruption.py \
         --checkpoint checkpoints/gsm/jiviteshjn_s1r_ck13 \
         --val-path data/gsm_valid.json \
@@ -19,15 +19,21 @@ Requirements:
     - Checkpoint must be a stage-3 GSM8K Coconut checkpoint (6 latent positions)
 """
 
+import sys
 import json
 import argparse
 import random
+from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
 
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from coconut import Coconut
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -44,10 +50,6 @@ MAX_NEW_TOKENS = 100        # matches run.py default for GSM8K
 
 def load_model(checkpoint_path: str, device: str) -> tuple:
     """Load GPT-2 + Coconut wrapper from checkpoint."""
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from coconut import Coconut
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     tokenizer.pad_token = tokenizer.eos_token
@@ -88,8 +90,7 @@ def load_val_data(val_path: str) -> list[dict]:
     return data
 
 
-def build_prompt(sample: dict, tokenizer, device: str, latent_id: int,
-                 start_id: int, end_id: int) -> torch.Tensor:
+def build_prompt(sample: dict, tokenizer, device: str, latent_id: int, start_id: int, end_id: int) -> torch.Tensor:
     """
     Build the input_ids tensor for a GSM8K sample at stage 3
     (all 3 reasoning steps replaced by latent tokens).
@@ -112,8 +113,7 @@ def extract_answer(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def calibrate(model, tokenizer, data: list[dict], device: str,
-              n_samples: int = 50) -> list[tuple]:
+def calibrate(model, tokenizer, data: list[dict], device: str, n_samples: int = 50) -> list[tuple]:
     """
     Run n_samples clean forward passes and collect hidden states at each
     latent position. Returns list of (mean, std) tensors, one per position.
@@ -127,16 +127,12 @@ def calibrate(model, tokenizer, data: list[dict], device: str,
     samples   = random.sample(data, min(n_samples, len(data)))
 
     for sample in tqdm(samples, desc="Calibration"):
-        input_ids = build_prompt(sample, tokenizer, device,
-                                 latent_id, start_id, end_id)
+        input_ids = build_prompt(sample, tokenizer, device, latent_id, start_id, end_id)
         labels    = input_ids.clone()
         attn_mask = torch.ones_like(input_ids)
         pos_ids   = torch.arange(input_ids.shape[1], device=device).unsqueeze(0)
 
-        outputs = model.forward(
-            input_ids, attn_mask, labels, pos_ids,
-            collect_hidden_states=True,
-        )
+        outputs = model.forward(input_ids, attn_mask, labels, pos_ids, collect_hidden_states=True)
 
         for pos_idx, h in enumerate(outputs.collected_hidden_states):
             collected[pos_idx].append(h)
@@ -188,8 +184,7 @@ def evaluate(
         n_steps = len(sample["steps"])
         answer  = sample["answer"].replace(",", "").strip()
 
-        input_ids = build_prompt(sample, tokenizer, device,
-                                 latent_id, start_id, end_id)
+        input_ids = build_prompt(sample, tokenizer, device, latent_id, start_id, end_id)
         attn_mask = torch.ones_like(input_ids)
 
         out_tokens = model.generate(
@@ -201,24 +196,24 @@ def evaluate(
             synced_gpus=False,
         )
 
-        text    = tokenizer.decode(out_tokens[0], skip_special_tokens=True)
-        pred    = extract_answer(text)
+        text = tokenizer.decode(out_tokens[0], skip_special_tokens=True)
+        pred = extract_answer(text)
         correct = int(pred == answer)
-        correct_total          += correct
+        correct_total += correct
         correct_by_steps[n_steps] += correct
-        total_by_steps[n_steps]   += 1
+        total_by_steps[n_steps] += 1
 
     n = len(data)
     return {
-        "accuracy":  correct_total / n,
+        "accuracy": correct_total / n,
         "n_correct": correct_total,
-        "n_total":   n,
+        "n_total": n,
         "by_difficulty": {
             str(k): {
-                "accuracy":  correct_by_steps[k] / total_by_steps[k]
-                             if total_by_steps[k] > 0 else None,
+                "accuracy": correct_by_steps[k] / total_by_steps[k]
+                            if total_by_steps[k] > 0 else None,
                 "n_correct": correct_by_steps[k],
-                "n_total":   total_by_steps[k],
+                "n_total": total_by_steps[k],
             }
             for k in sorted(total_by_steps.keys())
         },
@@ -247,8 +242,7 @@ def main():
 
     model, tokenizer = load_model(args.checkpoint, args.device)
     data             = load_val_data(args.val_path)
-    noise_stats      = calibrate(model, tokenizer, data, args.device,
-                                  args.n_calibration)
+    noise_stats      = calibrate(model, tokenizer, data, args.device, args.n_calibration)
 
     results = {
         "metadata": {
@@ -268,10 +262,15 @@ def main():
     def run(label, corrupt_positions, desc=None):
         desc = desc or label
         print(f"\n--- {label} ---")
-        r = evaluate(model, tokenizer, data, args.device,
-                     corrupt_positions=corrupt_positions,
-                     noise_stats=noise_stats,
-                     desc=desc)
+        r = evaluate(
+            model,
+            tokenizer,
+            data,
+            args.device,
+            corrupt_positions=corrupt_positions,
+            noise_stats=noise_stats,
+            desc=desc
+        )
         results["experiments"][label] = r
         acc = r["accuracy"]
         print(f"  Overall: {acc*100:.1f}%  ({r['n_correct']}/{r['n_total']})")
@@ -286,15 +285,15 @@ def main():
 
     # 2. Single-position corruption
     for k in range(N_LATENT):
-        run(f"single_{k}",
-            corrupt_positions={k},
-            desc=f"Single corrupt pos {k+1}")
+        run(f"single_{k}", corrupt_positions={k}, desc=f"Single corrupt pos {k+1}")
 
     # 3. Cumulative reverse: corrupt positions k..N_LATENT
     for k in range(N_LATENT - 1, -1, -1):
-        run(f"cumulative_rev_{k}",
+        run(
+            f"cumulative_rev_{k}",
             corrupt_positions=set(range(k, N_LATENT)),
-            desc=f"Rev corrupt pos {k+1}..{N_LATENT}")
+            desc=f"Rev corrupt pos {k+1}..{N_LATENT}"
+        )
 
     # Summary
     print("\n" + "=" * 55)

@@ -5,7 +5,7 @@ Produces a two-panel figure:
   Left:  Train and val loss over epochs
   Right: Val AUC over epochs with best epoch marked
 
-Usage (run from repo root):
+Usage:
     python scripts/plot_training.py \
         --history checkpoints/head/training_history.json \
         --output-dir figures/

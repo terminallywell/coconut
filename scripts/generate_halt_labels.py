@@ -18,19 +18,20 @@ Outputs two files:
       i corresponds to sample i // N_POSITIONS.
 
 Usage:
-    python generate_halt_labels.py \
-        --checkpoint checkpoints/eval/jiviteshjn_s1r_ck13 \
+    python scripts/generate_halt_labels.py \
+        --checkpoint checkpoints/gsm/jiviteshjn_s1r_ck13 \
         --train-path data/gsm_train.json \
         --output-dir results/ \
         [--n-samples 12000] \
-        [--min-latent-steps 2] \
         [--seed 67] \
         [--device cuda]
 """
 
+import sys
 import json
 import random
 import argparse
+from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,10 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from coconut import Coconut
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -60,8 +65,6 @@ N_POSITIONS      = len(HALT_POSITIONS)
 # ---------------------------------------------------------------------------
 
 def load_model(checkpoint_path: str, device: str) -> tuple:
-    from coconut import Coconut
-
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.add_tokens("<|start-latent|>")
@@ -207,8 +210,11 @@ def _run_with_fixed_halt(model, tokenizer, input_ids, attn_mask, device, halt_at
             outputs = model.base_causallm(
                 inputs_embeds=inputs_embeds[:, next_compute_range[0]:next_compute_range[1], :],
                 attention_mask=attn_mask[:, next_compute_range[0]:next_compute_range[1]],
-                position_ids=torch.arange(next_compute_range[0], next_compute_range[1],
-                                          device=device).unsqueeze(0),
+                position_ids=torch.arange(
+                    next_compute_range[0],
+                    next_compute_range[1],
+                    device=device
+                ).unsqueeze(0),
                 output_hidden_states=True,
             )
             hidden_states_offset = 0
@@ -220,8 +226,11 @@ def _run_with_fixed_halt(model, tokenizer, input_ids, attn_mask, device, halt_at
             outputs = model.base_causallm(
                 inputs_embeds=inputs_embeds[:, next_compute_range[0]:next_compute_range[1], :],
                 attention_mask=attn_mask[:, :next_compute_range[1]],
-                position_ids=torch.arange(next_compute_range[0], next_compute_range[1],
-                                          device=device).unsqueeze(0),
+                position_ids=torch.arange(
+                    next_compute_range[0],
+                    next_compute_range[1],
+                    device=device
+                ).unsqueeze(0),
                 past_key_values=past_kv,
                 output_hidden_states=True,
             )
@@ -260,8 +269,11 @@ def _run_with_fixed_halt(model, tokenizer, input_ids, attn_mask, device, halt_at
     outputs = model.base_causallm(
         inputs_embeds=inputs_embeds[:, next_compute_range[0]:, :],
         attention_mask=attn_mask[:, :input_ids.shape[1]],
-        position_ids=torch.arange(next_compute_range[0], input_ids.shape[1],
-                                  device=device).unsqueeze(0),
+        position_ids=torch.arange(
+            next_compute_range[0],
+            input_ids.shape[1],
+            device=device
+        ).unsqueeze(0),
         past_key_values=past_kv,
     )
 
@@ -297,7 +309,6 @@ def main():
     parser.add_argument("--train-path",        default="data/gsm_train.json")
     parser.add_argument("--output-dir",        default="results")
     parser.add_argument("--n-samples",         type=int, default=12000)
-    parser.add_argument("--min-latent-steps",  type=int, default=2)
     parser.add_argument("--device",            default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed",              type=int, default=67)
     args = parser.parse_args()
@@ -322,18 +333,22 @@ def main():
 
     data = load_and_sample(args.train_path, args.n_samples, args.seed)
 
-    # Accumulate in memory — ~167MB for 12k samples, well within RAM
-    all_hidden  = []   # (N_pairs, 768) float32
-    all_labels  = []   # (N_pairs,) bool
+    all_hidden    = []   # (N_pairs, 768) float32
+    all_labels    = []   # (N_pairs,) bool
     all_positions = [] # (N_pairs,) int8
-    all_nsteps  = []   # (N_pairs,) int8
-    meta        = []   # per-sample metadata
-    discarded   = 0
+    all_nsteps    = []   # (N_pairs,) int8
+    meta          = []   # per-sample metadata
+    discarded     = 0
 
     for sample in tqdm(data, desc="Generating labels"):
         result = label_sample(
-            model, tokenizer, sample, args.device,
-            latent_id, start_id, end_id,
+            model,
+            tokenizer,
+            sample,
+            args.device,
+            latent_id,
+            start_id,
+            end_id,
         )
         if result is None:
             discarded += 1

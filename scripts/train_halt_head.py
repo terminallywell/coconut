@@ -6,19 +6,21 @@ The halting head is a small MLP that takes the hidden state at each latent
 position and predicts whether to halt (1) or continue (0).
 
 Usage:
-    python train_halt_head.py \
+    python scripts/train_halt_head.py \
         --labels results/halt_labels.h5 \
         --output-dir checkpoints/head/ \
         [--val-split 0.1] \
         [--hidden-size 128] \
-        [--epochs 20] \
+        [--epochs 30] \
         [--lr 1e-3] \
         [--batch-size 256] \
         [--seed 67]
 """
 
+import sys
 import json
 import argparse
+from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -29,16 +31,18 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import roc_auc_score
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from coconut import HaltingHead
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-HIDDEN_SIZE_GPT2      = 768
-N_LATENT              = 6
-MIN_LATENT_STEPS      = 2
-N_CANDIDATE_POS = N_LATENT - MIN_LATENT_STEPS # [2, 3, 4, 5] -> 4
+HIDDEN_SIZE_GPT2 = 768
+N_LATENT         = 6
+MIN_LATENT_STEPS = 2
+N_CANDIDATE_POS  = N_LATENT - MIN_LATENT_STEPS # [2, 3, 4, 5] -> 4
 
 
 # ---------------------------------------------------------------------------
@@ -47,11 +51,13 @@ N_CANDIDATE_POS = N_LATENT - MIN_LATENT_STEPS # [2, 3, 4, 5] -> 4
 
 class HaltDataset(Dataset):
     """Dataset loaded directly from flat HDF5 arrays."""
-    def __init__(self,
-                 features:  torch.Tensor,
-                 labels:    torch.Tensor,
-                 positions: torch.Tensor,
-                 n_steps:   torch.Tensor):
+    def __init__(
+            self,
+            features:  torch.Tensor,
+            labels:    torch.Tensor,
+            positions: torch.Tensor,
+            n_steps:   torch.Tensor
+        ):
         self.features  = features
         self.labels    = labels
         self.positions = positions
@@ -153,8 +159,7 @@ def train_epoch(
         optimizer.zero_grad()
         p_halt = model(features).squeeze(1)
 
-        weights = torch.where(labels == 1, pos_weight[1].to(device),
-                              pos_weight[0].to(device))
+        weights = torch.where(labels == 1, pos_weight[1].to(device), pos_weight[0].to(device))
         loss = (bce_fn(p_halt, labels) * weights).mean()
         loss.backward()
         optimizer.step()
@@ -182,7 +187,6 @@ def evaluate(
     all_labels = []
     all_probs  = []
     all_pos    = []
-    all_steps  = []
 
     bce_fn = nn.BCELoss(reduction="none")
     total_loss = 0.0
@@ -194,8 +198,7 @@ def evaluate(
 
         p_halt = model(features).squeeze(1)
 
-        weights = torch.where(labels == 1, pos_weight[1].to(device),
-                              pos_weight[0].to(device))
+        weights = torch.where(labels == 1, pos_weight[1].to(device), pos_weight[0].to(device))
         loss = (bce_fn(p_halt, labels) * weights).mean()
         total_loss += loss.item()
 
@@ -204,7 +207,6 @@ def evaluate(
         all_labels.extend(labels.cpu().tolist())
         all_probs.extend(p_halt.cpu().tolist())
         all_pos.extend(positions.cpu().tolist())
-        all_steps.extend(n_steps.tolist())
 
     acc = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
     auc = roc_auc_score(all_labels, all_probs) if len(set(all_labels)) > 1 else 0.0
@@ -236,7 +238,7 @@ def main():
     parser.add_argument("--output-dir",  default="checkpoints/head")
     parser.add_argument("--val-split",   type=float, default=0.1)
     parser.add_argument("--hidden-size", type=int,   default=128)
-    parser.add_argument("--epochs",      type=int,   default=20)
+    parser.add_argument("--epochs",      type=int,   default=30)
     parser.add_argument("--lr",          type=float, default=1e-3)
     parser.add_argument("--batch-size",  type=int,   default=256)
     parser.add_argument("--seed",        type=int,   default=67)
@@ -257,10 +259,8 @@ def main():
     pos_weight = train_ds.class_weights()
     print(f"\nClass weights: continue={pos_weight[0]:.3f}, halt={pos_weight[1]:.3f}")
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size,
-                              shuffle=True,  num_workers=0)
-    val_loader   = DataLoader(val_ds,   batch_size=args.batch_size,
-                              shuffle=False, num_workers=0)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  num_workers=0)
+    val_loader = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     # Model
     model = HaltingHead(
@@ -270,11 +270,8 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"\nHalting head parameters: {n_params:,}")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
-                                 weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs
-    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     # Training loop
     best_val_auc = 0.0
@@ -304,8 +301,7 @@ def main():
     print(f"\nBest epoch: {best_epoch} (val AUC={best_val_auc:.4f})")
 
     # Load best and report per-position accuracy
-    model.load_state_dict(torch.load(out_dir / "halt_head_best.pt",
-                                     map_location=args.device))
+    model.load_state_dict(torch.load(out_dir / "halt_head_best.pt", map_location=args.device))
     va_final = evaluate(model, val_loader, pos_weight, args.device)
 
     print(f"\nPer-position val accuracy (best model):")
@@ -328,7 +324,7 @@ def main():
     print(f"  halt_head_best.pt     — best checkpoint (by val AUC)")
     print(f"  halt_head_final.pt    — final epoch checkpoint")
     print(f"  training_history.json")
-    print(f"\nNote: run analyze_halting.py --halt-head to evaluate on the full val set.")
+    print(f"\nNote: run scripts/analyze_learned.py to evaluate on the full val set.")
 
 
 if __name__ == "__main__":

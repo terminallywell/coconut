@@ -6,7 +6,7 @@ Sweeps the halt decision threshold of a trained halting head MLP and measures
 the accuracy vs. latent steps saved tradeoff. Results are stratified by number
 of gold reasoning steps.
 
-Usage (run from repo root):
+Usage:
     python scripts/analyze_learned.py \
         --checkpoint checkpoints/gsm/jiviteshjn_s1r_ck13 \
         --halting-head checkpoints/head/halt_head_best.pt \
@@ -20,13 +20,14 @@ import json
 import argparse
 import random
 import sys
-from datetime import datetime
 from pathlib import Path
+from datetime import datetime
 
 import torch
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from halting_utils import N_LATENT, load_model, load_val_data, evaluate_with_threshold
 
 # ---------------------------------------------------------------------------
@@ -91,7 +92,10 @@ def main():
 
         print(f"\n--- {desc} ---")
         result = evaluate_with_threshold(
-            model, tokenizer, data, args.device,
+            model,
+            tokenizer,
+            data,
+            args.device,
             halt_threshold=None,
             min_latent_steps=args.min_latent_steps,
             halting_head=halting_head,

@@ -10,8 +10,8 @@ Produces two figures:
 
 Usage:
     python scripts/plot_halting.py \
-        --entropy  results/halting_results_entropy.json \
-        --learned  results/halting_results_learned.json \
+        --entropy results/halting_results_entropy.json \
+        --learned results/halting_results_learned.json \
         --output-dir figures/
 """
 

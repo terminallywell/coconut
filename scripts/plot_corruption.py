@@ -5,7 +5,7 @@ Produces a two-panel superplot:
   (a) Single-position accuracy drop by step count
   (b) Cumulative reverse corruption by step count
 
-Run from repo root:
+Usage:
     python scripts/plot_corruption.py \
         --input results/corruption_results.json \
         --output-dir figures/
