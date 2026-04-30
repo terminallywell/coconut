@@ -7,8 +7,8 @@ position and predicts whether to halt (1) or continue (0).
 
 Usage:
     python train_halt_head.py \
-        --labels halt_labels/halt_labels.h5 \
-        --output-dir halt_head/ \
+        --labels results/halt_labels.h5 \
+        --output-dir checkpoints/head/ \
         [--val-split 0.1] \
         [--hidden-size 128] \
         [--epochs 20] \
@@ -27,7 +27,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import classification_report, roc_auc_score
+from sklearn.metrics import roc_auc_score
 
 from coconut import HaltingHead
 
@@ -233,7 +233,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--labels",      required=True,
                         help="Path to halt_labels.h5 (HDF5 format)")
-    parser.add_argument("--output-dir",  default="halt_head")
+    parser.add_argument("--output-dir",  default="checkpoints/head")
     parser.add_argument("--val-split",   type=float, default=0.1)
     parser.add_argument("--hidden-size", type=int,   default=128)
     parser.add_argument("--epochs",      type=int,   default=20)

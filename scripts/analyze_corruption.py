@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Experiment A: Corruption analysis for Coconut GSM8K checkpoint.
+Corruption analysis for Coconut GSM8K checkpoint.
 
-Measures accuracy under progressive, single-position, and intra-step
-corruption of latent thought positions. Results are stratified by
-problem difficulty (number of gold reasoning steps).
+Measures accuracy under cumulative and single-position corruption of latent
+thought positions. Results are stratified by problem difficulty (number of
+gold reasoning steps).
 
 Usage (run from repo root with coconut env active):
-    python analyze_corruption.py \
-        --checkpoint checkpoints/eval/jiviteshjn_s1r_ck13 \
+    python scripts/analyze_corruption.py \
+        --checkpoint checkpoints/gsm/jiviteshjn_s1r_ck13 \
         --val-path data/gsm_valid.json \
-        --output corruption_results.json \
+        --output results/corruption_results.json \
         [--n-calibration 50] \
         [--device cuda]
 
@@ -19,15 +19,11 @@ Requirements:
     - Checkpoint must be a stage-3 GSM8K Coconut checkpoint (6 latent positions)
 """
 
-import os
-import re
-import sys
 import json
 import argparse
 import random
 from collections import defaultdict
 from datetime import datetime
-from pathlib import Path
 
 import torch
 import numpy as np
@@ -38,15 +34,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # Constants
 # ---------------------------------------------------------------------------
 
-N_LATENT = 6          # c_thought=2, max_latent_stage=3 → 3*2 = 6
-MODEL_ID = "openai-community/gpt2"
-MAX_NEW_TOKENS = 100  # matches run.py default for GSM8K
-
-# DIFFICULTY_BUCKETS = {
-#     "easy":   (1, 2),
-#     "medium": (3, 4),
-#     "hard":   (5, 99),
-# }
+N_LATENT       = 6          # c_thought=2, max_latent_stage=3 → 3*2 = 6
+MODEL_ID       = "openai-community/gpt2"
+MAX_NEW_TOKENS = 100        # matches run.py default for GSM8K
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +45,9 @@ MAX_NEW_TOKENS = 100  # matches run.py default for GSM8K
 
 def load_model(checkpoint_path: str, device: str) -> tuple:
     """Load GPT-2 + Coconut wrapper from checkpoint."""
-    # import here so script works from repo root
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
     from coconut import Coconut
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
@@ -64,9 +56,9 @@ def load_model(checkpoint_path: str, device: str) -> tuple:
     tokenizer.add_tokens("<|end-latent|>")
     tokenizer.add_tokens("<|latent|>")
 
-    latent_id  = tokenizer.convert_tokens_to_ids("<|latent|>")
-    start_id   = tokenizer.convert_tokens_to_ids("<|start-latent|>")
-    end_id     = tokenizer.convert_tokens_to_ids("<|end-latent|>")
+    latent_id = tokenizer.convert_tokens_to_ids("<|latent|>")
+    start_id  = tokenizer.convert_tokens_to_ids("<|start-latent|>")
+    end_id    = tokenizer.convert_tokens_to_ids("<|end-latent|>")
 
     base_model = AutoModelForCausalLM.from_pretrained(MODEL_ID)
     base_model.resize_token_embeddings(len(tokenizer))
@@ -105,18 +97,8 @@ def build_prompt(sample: dict, tokenizer, device: str, latent_id: int,
     Format mirrors run.py's dataset construction.
     """
     question = sample["question"].strip()
-
-    # Stage 3: all steps replaced → 3 groups of 2 latent tokens
-    latent_block = (
-        [start_id]
-        + [latent_id] * N_LATENT
-        + [end_id]
-    )
-
-    # Tokenize question
+    latent_block = [start_id] + [latent_id] * N_LATENT + [end_id]
     q_ids = tokenizer.encode(question, add_special_tokens=False)
-
-    # Full sequence: question + latent block (no answer — we'll generate)
     input_ids = q_ids + latent_block
     return torch.tensor(input_ids, device=device).unsqueeze(0)
 
@@ -142,9 +124,8 @@ def calibrate(model, tokenizer, data: list[dict], device: str,
     start_id  = tokenizer.convert_tokens_to_ids("<|start-latent|>")
     end_id    = tokenizer.convert_tokens_to_ids("<|end-latent|>")
 
-    collected = defaultdict(list)  # position → list of hidden state tensors
-
-    samples = random.sample(data, min(n_samples, len(data)))
+    collected = defaultdict(list)
+    samples   = random.sample(data, min(n_samples, len(data)))
 
     for sample in tqdm(samples, desc="Calibration"):
         input_ids = build_prompt(sample, tokenizer, device,
@@ -164,14 +145,14 @@ def calibrate(model, tokenizer, data: list[dict], device: str,
     noise_stats = []
     for pos_idx in range(N_LATENT):
         if pos_idx not in collected or len(collected[pos_idx]) == 0:
-            print(f"  Warning: no hidden states collected for position {pos_idx}")
+            print(f"  Warning: no hidden states collected for position {pos_idx + 1}")
             noise_stats.append((torch.zeros(1), torch.ones(1)))
             continue
         stacked = torch.stack(collected[pos_idx])  # (n_samples, hidden_size)
         mean = stacked.mean(dim=0)
         std  = stacked.std(dim=0).clamp(min=1e-6)
         l2   = stacked.norm(dim=1).mean().item()
-        print(f"  Position {pos_idx}: mean_L2={l2:.2f}, "
+        print(f"  Position {pos_idx + 1}: mean_L2={l2:.2f}, "
               f"std_mean={std.mean().item():.4f}")
         noise_stats.append((mean, std))
 
@@ -194,25 +175,25 @@ def evaluate(
 ) -> dict:
     """
     Run generation on all samples with optional corruption.
-    Returns dict with overall accuracy and per-difficulty accuracy.
+    Returns dict with overall accuracy and per-step-count accuracy.
     """
     latent_id = tokenizer.convert_tokens_to_ids("<|latent|>")
     start_id  = tokenizer.convert_tokens_to_ids("<|start-latent|>")
     end_id    = tokenizer.convert_tokens_to_ids("<|end-latent|>")
 
-    correct_by_diff = defaultdict(int)
-    total_by_diff   = defaultdict(int)
-    correct_total   = 0
+    correct_by_steps = defaultdict(int)
+    total_by_steps   = defaultdict(int)
+    correct_total    = 0
 
     for sample in tqdm(data, desc=desc, leave=False):
-        n_steps  = len(sample["steps"])
-        answer   = sample["answer"].replace(",", "").strip()
+        n_steps = len(sample["steps"])
+        answer  = sample["answer"].replace(",", "").strip()
 
         input_ids = build_prompt(sample, tokenizer, device,
                                  latent_id, start_id, end_id)
         attn_mask = torch.ones_like(input_ids)
 
-        outputs = model.generate(
+        out_tokens = model.generate(
             input_ids,
             attn_mask,
             max_new_tokens=MAX_NEW_TOKENS,
@@ -221,39 +202,28 @@ def evaluate(
             synced_gpus=False,
         )
 
-        text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        pred = extract_answer(text)
+        text    = tokenizer.decode(out_tokens[0], skip_special_tokens=True)
+        pred    = extract_answer(text)
         correct = int(pred == answer)
-        correct_total += correct
-
-        # group by # golden steps
-        k = n_steps
-        correct_by_diff[k] += correct
-        total_by_diff[k]   += 1
+        correct_total          += correct
+        correct_by_steps[n_steps] += correct
+        total_by_steps[n_steps]   += 1
 
     n = len(data)
-    result = {
-        "accuracy":    correct_total / n,
-        "n_correct":   correct_total,
-        "n_total":     n,
+    return {
+        "accuracy":  correct_total / n,
+        "n_correct": correct_total,
+        "n_total":   n,
         "by_difficulty": {
             str(k): {
-                "accuracy": correct_by_diff[k] / total_by_diff[k]
-                            if total_by_diff[k] > 0 else None,
-                "n_correct": correct_by_diff[k],
-                "n_total":   total_by_diff[k],
+                "accuracy":  correct_by_steps[k] / total_by_steps[k]
+                             if total_by_steps[k] > 0 else None,
+                "n_correct": correct_by_steps[k],
+                "n_total":   total_by_steps[k],
             }
-            for k in sorted(total_by_diff.keys())
+            for k in sorted(total_by_steps.keys())
         },
     }
-    return result
-
-
-# def difficulty_bucket(n_steps: int) -> str:
-#     for bkt, (lo, hi) in DIFFICULTY_BUCKETS.items():
-#         if lo <= n_steps <= hi:
-#             return bkt
-#     return "hard"
 
 
 # ---------------------------------------------------------------------------
@@ -262,12 +232,12 @@ def evaluate(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint",     required=True)
-    parser.add_argument("--val-path",       default="data/gsm_valid.json")
-    parser.add_argument("--output",         default="corruption_results.json")
-    parser.add_argument("--n-calibration",  type=int, default=50)
-    parser.add_argument("--device",         default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--seed",           type=int, default=42)
+    parser.add_argument("--checkpoint",    required=True)
+    parser.add_argument("--val-path",      default="data/gsm_valid.json")
+    parser.add_argument("--output",        default="results/corruption_results.json")
+    parser.add_argument("--n-calibration", type=int, default=50)
+    parser.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--seed",          type=int, default=42)
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -277,8 +247,9 @@ def main():
     print(f"N latent positions: {N_LATENT}")
 
     model, tokenizer = load_model(args.checkpoint, args.device)
-    data = load_val_data(args.val_path)
-    noise_stats = calibrate(model, tokenizer, data, args.device, args.n_calibration)
+    data             = load_val_data(args.val_path)
+    noise_stats      = calibrate(model, tokenizer, data, args.device,
+                                  args.n_calibration)
 
     results = {
         "metadata": {
@@ -305,45 +276,34 @@ def main():
         results["experiments"][label] = r
         acc = r["accuracy"]
         print(f"  Overall: {acc*100:.1f}%  ({r['n_correct']}/{r['n_total']})")
-        for bkt, v in r["by_difficulty"].items():
+        for k, v in r["by_difficulty"].items():
             if v["n_total"] > 0:
-                print(f"  {bkt:6s}: {v['accuracy']*100:.1f}%  (n={v['n_total']})")
-        # save incrementally
+                print(f"  {k} steps: {v['accuracy']*100:.1f}%  (n={v['n_total']})")
         with open(args.output, "w") as f:
             json.dump(results, f, indent=2)
 
-    # 1. Clean baseline
-    run("clean", corrupt_positions=None, desc="Clean baseline")
+    # 1. Baseline
+    run("baseline", corrupt_positions=None, desc="Baseline")
 
-    # 2. Progressive forward corruption: corrupt positions 0..k
-    for k in range(1, N_LATENT + 1):
-        run(f"progressive_fwd_{k}",
-            corrupt_positions=set(range(k)),
-            desc=f"Fwd corrupt 0..{k-1}")
-
-    # 3. Progressive reverse corruption: corrupt positions k..5
-    for k in range(N_LATENT - 1, -1, -1):
-        run(f"progressive_rev_{k}",
-            corrupt_positions=set(range(k, N_LATENT)),
-            desc=f"Rev corrupt {k}..{N_LATENT-1}")
-
-    # 4. Single-position corruption
+    # 2. Single-position corruption
     for k in range(N_LATENT):
         run(f"single_{k}",
             corrupt_positions={k},
-            desc=f"Single corrupt pos {k}")
+            desc=f"Single corrupt pos {k+1}")
 
-    # 5. Intra-step: first thoughts only (positions 0, 2, 4)
-    run("intra_first_thoughts",
-        corrupt_positions={0, 2, 4},
-        desc="First thoughts corrupted")
+    # 3. Cumulative forward: corrupt positions 1..k
+    for k in range(1, N_LATENT + 1):
+        run(f"cumulative_fwd_{k}",
+            corrupt_positions=set(range(k)),
+            desc=f"Fwd corrupt pos 1..{k}")
 
-    # 6. Intra-step: second thoughts only (positions 1, 3, 5)
-    run("intra_second_thoughts",
-        corrupt_positions={1, 3, 5},
-        desc="Second thoughts corrupted")
+    # 4. Cumulative reverse: corrupt positions k..N_LATENT
+    for k in range(N_LATENT - 1, -1, -1):
+        run(f"cumulative_rev_{k}",
+            corrupt_positions=set(range(k, N_LATENT)),
+            desc=f"Rev corrupt pos {k+1}..{N_LATENT}")
 
-    # Final summary
+    # Summary
     print("\n" + "=" * 55)
     print("SUMMARY")
     print("=" * 55)

@@ -21,7 +21,7 @@ Usage:
     python generate_halt_labels.py \
         --checkpoint checkpoints/eval/jiviteshjn_s1r_ck13 \
         --train-path data/gsm_train.json \
-        --output-dir halt_labels/ \
+        --output-dir results/ \
         [--n-samples 12000] \
         [--min-latent-steps 2] \
         [--seed 67] \
@@ -295,7 +295,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint",        required=True)
     parser.add_argument("--train-path",        default="data/gsm_train.json")
-    parser.add_argument("--output-dir",        default="halt_labels")
+    parser.add_argument("--output-dir",        default="results")
     parser.add_argument("--n-samples",         type=int, default=12000)
     parser.add_argument("--min-latent-steps",  type=int, default=2)
     parser.add_argument("--device",            default="cuda" if torch.cuda.is_available() else "cpu")

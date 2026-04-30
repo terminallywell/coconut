@@ -6,7 +6,7 @@ Two-panel figure:
   Right: Avg latent steps used by gold step count (selected thresholds + learned head)
 
 Usage:
-    python plot_halting2.py \
+    python plot_halting.py \
         --entropy halting_results.json \
         --learned halting_results_learned.json \
         --output-dir figures/
