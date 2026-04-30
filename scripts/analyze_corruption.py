@@ -2,7 +2,7 @@
 """
 Corruption analysis for Coconut GSM8K checkpoint.
 
-Measures accuracy under cumulative and single-position corruption of latent
+Measures accuracy under single-position and cumulative corruption of latent
 thought positions. Results are stratified by problem difficulty (number of
 gold reasoning steps).
 
@@ -26,7 +26,6 @@ from collections import defaultdict
 from datetime import datetime
 
 import torch
-import numpy as np
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -291,13 +290,7 @@ def main():
             corrupt_positions={k},
             desc=f"Single corrupt pos {k+1}")
 
-    # 3. Cumulative forward: corrupt positions 1..k
-    for k in range(1, N_LATENT + 1):
-        run(f"cumulative_fwd_{k}",
-            corrupt_positions=set(range(k)),
-            desc=f"Fwd corrupt pos 1..{k}")
-
-    # 4. Cumulative reverse: corrupt positions k..N_LATENT
+    # 3. Cumulative reverse: corrupt positions k..N_LATENT
     for k in range(N_LATENT - 1, -1, -1):
         run(f"cumulative_rev_{k}",
             corrupt_positions=set(range(k, N_LATENT)),
