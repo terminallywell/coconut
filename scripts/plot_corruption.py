@@ -82,8 +82,8 @@ def plot_single_position(exps, ax):
         legend_labels.append(f"{step} step{'s' if step > 1 else ''} ($n$={STEP_N[step]})")
 
     ax.axhline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax.set_xlabel("Corrupted Position")
-    ax.set_ylabel("Accuracy Drop from Baseline (pp)")
+    ax.set_xlabel("Corrupted Position", fontsize=12)
+    ax.set_ylabel("Accuracy Drop from Baseline (pp)", fontsize=12)
     ax.set_title("(a) Single-Position Corruption")
     ax.set_xticks(positions)
     ax.set_xticklabels(xlabels)
@@ -99,7 +99,7 @@ def plot_cumulative_rev(exps, ax):
     # rev_keys are 0-indexed start positions, ordered right-to-left
     rev_keys = list(range(N_LATENT - 1, -1, -1))  # [5,4,3,2,1,0]
     xs       = list(range(len(rev_keys)))
-    xlabels  = [f"{k+1}--{N_LATENT}" for k in rev_keys]
+    xlabels  = [f"{k+1}–{N_LATENT}" for k in rev_keys]
 
     for step in STEP_COUNTS:
         b = acc(exps, "baseline", step)
@@ -114,26 +114,29 @@ def plot_cumulative_rev(exps, ax):
                 linewidth=lw(step), markersize=5)
 
     ax.axhline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax.set_xlabel("Corrupted Positions (start--end)")
-    ax.set_ylabel("Accuracy Drop from Baseline (pp)")
-    ax.set_title("(b) Cumulative Reverse Corruption")
+    ax.set_xlabel("Corrupted Positions (start–end)", fontsize=12)
+    ax.set_ylabel("Accuracy Drop from Baseline (pp)", fontsize=12)
+    ax.set_title("(b) Reverse Cumulative Corruption")
     ax.set_xticks(xs)
     ax.set_xticklabels(xlabels, rotation=20, ha="right")
 
 
 def plot_superplot(exps, output_path, dpi=150):
     """Two-panel superplot with shared y-axis and single shared legend."""
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5),
-                             sharey=True, constrained_layout=True)
+    fig, axes = plt.subplots(2, 1, figsize=(7, 10),
+                            sharey=True, constrained_layout=True)
 
     legend_handles, legend_labels = plot_single_position(exps, axes[0])
     plot_cumulative_rev(exps, axes[1])
 
+    for ax in axes:
+        ax.tick_params(left=True, labelleft=True)
+
     fig.legend(legend_handles, legend_labels,
-               loc="lower center", bbox_to_anchor=(0.5, -0.14),
-               ncol=len(STEP_COUNTS),
-               title="Gold steps (line width proportional to frequency in dataset)",
-               title_fontsize=10, fontsize=10, frameon=True)
+            loc="lower center", bbox_to_anchor=(0.5, -0.08),
+            ncol=3,  # fewer columns fit better below a narrow figure
+            title="Gold steps (line width proportional to frequency in dataset)",
+            title_fontsize=9, fontsize=9, frameon=True)
     fig.suptitle("Corruption Analysis: Accuracy Drop by Latent Position",
                  fontsize=13, fontweight="bold")
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
