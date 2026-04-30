@@ -338,7 +338,7 @@ def main():
     # --- Load halting head if provided ---
     halting_head = None
     if args.halt_head is not None:
-        from train_halt_head import HaltingHead
+        from scripts.train_halt_head import HaltingHead
         halting_head = HaltingHead().to(args.device)
         halting_head.load_state_dict(torch.load(args.halt_head, map_location=args.device))
         halting_head.eval()
@@ -359,7 +359,7 @@ def main():
 
     if halting_head is not None:
         # --- Sweep halt head decision thresholds ---
-        head_thresholds = np.arange(0.1, 1, 0.05)
+        head_thresholds = np.arange(0.05, 1, 0.05)
         print(f"Halt head probability threshold sweep")
 
         for ht in head_thresholds:
