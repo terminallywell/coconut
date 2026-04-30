@@ -9,7 +9,7 @@ of gold reasoning steps.
 Usage (run from repo root):
     python scripts/analyze_learned.py \
         --checkpoint checkpoints/gsm/jiviteshjn_s1r_ck13 \
-        --halt-head checkpoints/head/halt_head_best.pt \
+        --halting-head checkpoints/head/halt_head_best.pt \
         --val-path data/gsm_valid.json \
         --output results/halting_results_learned.json \
         [--min-latent-steps 2] \
@@ -33,7 +33,8 @@ from halting_utils import N_LATENT, load_model, load_val_data, evaluate_with_thr
 # Constants
 # ---------------------------------------------------------------------------
 
-HEAD_THRESHOLDS = list(np.round(np.arange(0.1, 1.0, 0.05), 2))
+HEAD_THRESHOLDS  = np.arange(0.05, 1.0, 0.05).tolist()
+HIDDEN_SIZE_GPT2 = 768
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +44,7 @@ HEAD_THRESHOLDS = list(np.round(np.arange(0.1, 1.0, 0.05), 2))
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint",       required=True)
-    parser.add_argument("--halt-head",        required=True,
+    parser.add_argument("--halting-head",        required=True,
                         help="Path to trained halting head .pt checkpoint")
     parser.add_argument("--val-path",         default="data/gsm_valid.json")
     parser.add_argument("--output",           default="results/halting_results_learned.json")
@@ -64,17 +65,17 @@ def main():
 
     # Load halting head
     from coconut import HaltingHead
-    halting_head = HaltingHead().to(args.device)
+    halting_head = HaltingHead(input_size=HIDDEN_SIZE_GPT2).to(args.device)
     halting_head.load_state_dict(
-        torch.load(args.halt_head, map_location=args.device)
+        torch.load(args.halting_head, map_location=args.device)
     )
     halting_head.eval()
-    print(f"Loaded halting head from {args.halt_head}")
+    print(f"Loaded halting head from {args.halting_head}")
 
     results = {
         "metadata": {
             "checkpoint":       args.checkpoint,
-            "halt_head":        args.halt_head,
+            "halting_head":        args.halting_head,
             "val_path":         args.val_path,
             "n_latent":         N_LATENT,
             "min_latent_steps": args.min_latent_steps,
@@ -85,7 +86,7 @@ def main():
     }
 
     for ht in HEAD_THRESHOLDS:
-        label = f"halt_head_t{ht:.2f}"
+        label = f"halting_head_t{ht:.2f}"
         desc  = f"Learned head (threshold={ht:.2f})"
 
         print(f"\n--- {desc} ---")
@@ -94,7 +95,7 @@ def main():
             halt_threshold=None,
             min_latent_steps=args.min_latent_steps,
             halting_head=halting_head,
-            halt_head_threshold=ht,
+            halting_head_threshold=ht,
             desc=desc,
         )
         results["thresholds"][label] = {

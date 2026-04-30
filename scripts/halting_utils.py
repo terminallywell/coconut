@@ -92,12 +92,12 @@ def extract_answer(text: str) -> str:
 def evaluate_with_threshold(
     model,
     tokenizer,
-    data: list,
+    data: list, 
     device: str,
     halt_threshold=None,
     min_latent_steps: int = 2,
     halting_head=None,
-    halt_head_threshold: float = 0.5,
+    halting_head_threshold: float = 0.5,
     desc: str = "Eval",
 ) -> dict:
     """
@@ -132,7 +132,7 @@ def evaluate_with_threshold(
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
             halting_head=halting_head,
-            halt_head_threshold=halt_head_threshold,
+            halting_head_threshold=halting_head_threshold,
             return_n_latent=True,
             synced_gpus=False,
         )
@@ -154,7 +154,7 @@ def evaluate_with_threshold(
         "n_total":          n,
         "avg_latent_used":  float(np.mean(latent_used_total)),
         "latent_used_dist": {
-            str(k): int(v)
+            str(int(k)): int(v)
             for k, v in sorted(
                 zip(*np.unique(latent_used_total, return_counts=True))
             )
