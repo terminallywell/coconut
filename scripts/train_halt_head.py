@@ -29,34 +29,16 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import classification_report, roc_auc_score
 
+from coconut import HaltingHead
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-N_LATENT         = 6
-HIDDEN_SIZE_GPT2 = 768
-MIN_LATENT_STEPS = 2
-POSITIONS        = list(range(MIN_LATENT_STEPS, N_LATENT))  # [2, 3, 4, 5]
-
-
-# ---------------------------------------------------------------------------
-# Halting Head Model
-# ---------------------------------------------------------------------------
-
-class HaltingHead(nn.Module):
-    def __init__(self, input_size: int = HIDDEN_SIZE_GPT2, inner_size: int = 128):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_size, inner_size),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(inner_size, 1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, h: torch.Tensor) -> torch.Tensor:
-        """h: (batch, hidden_size) → (batch, 1) halt probability"""
-        return self.net(h)
+HIDDEN_SIZE_GPT2      = 768
+N_LATENT              = 6
+MIN_LATENT_STEPS      = 2
+N_CANDIDATE_POS = N_LATENT - MIN_LATENT_STEPS # [2, 3, 4, 5] -> 4
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +94,7 @@ def load_h5(path: str, val_split: float, seed: int) -> tuple:
         positions = torch.tensor(f["positions"][:],     dtype=torch.float32)
         n_steps   = torch.tensor(f["n_steps"][:],       dtype=torch.long)
         n_pairs   = int(f.attrs.get("n_pairs",   len(labels)))
-        n_samples = int(f.attrs.get("n_samples", n_pairs // len(POSITIONS)))
+        n_samples = int(f.attrs.get("n_samples", n_pairs // N_CANDIDATE_POS))
 
     print(f"  {n_pairs} training pairs from {n_samples} labeled samples")
 

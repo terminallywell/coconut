@@ -10,6 +10,9 @@ from transformers.models.gpt2 import GPT2LMHeadModel
 Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits", "collected_hidden_states", "n_latent_used"])
 MAX_N_LATENT = 8
 
+# ---------------------------------------------------------------------------
+# Coconut Module
+# ---------------------------------------------------------------------------
 
 class Coconut(nn.Module):
 
@@ -67,9 +70,10 @@ class Coconut(nn.Module):
             min_latent_steps: minimum number of latent passes before halting
                 is allowed. Default 2 (protects the critical first step).
             halting_head: optional nn.Module that takes a hidden state tensor
-                of shape (hidden_size,) and returns a halt probability scalar.
-                If p_halt > 0.5 and pass_idx >= min_latent_steps, halts early.
-                Takes priority over halt_threshold if both are provided.
+                of shape (1, hidden_size) and returns a halt probability scalar.
+                If p_halt > halting_head_threshold and pass_idx >= min_latent_steps,
+                halts early. Takes priority over halt_threshold if both are provided.
+            halting_head_threshold: decision threshold for halting_head. Default 0.5.
         """
 
         logits = []
@@ -98,7 +102,7 @@ class Coconut(nn.Module):
 
         for pass_idx in range(max_n_latents):
 
-            if kv_cache == None:
+            if kv_cache is None:
                 # first forward pass
                 outputs = self.base_causallm(
                     inputs_embeds=inputs_embeds[
@@ -300,7 +304,7 @@ class Coconut(nn.Module):
         halt_threshold=None,
         min_latent_steps=2,
         halting_head=None,
-        halt_head_threshold=0.5,
+        halting_head_threshold=0.5,
         return_n_latent=False,
         **kwargs
     ):
@@ -324,7 +328,7 @@ class Coconut(nn.Module):
             halt_threshold=halt_threshold,
             min_latent_steps=min_latent_steps,
             halting_head=halting_head,
-            halting_head_threshold=halt_head_threshold,
+            halting_head_threshold=halting_head_threshold,
         )
         inputs_embeds  = outputs.inputs_embeds
         n_latent_used  = outputs.n_latent_used  # capture before autoregressive loop
@@ -368,3 +372,23 @@ class Coconut(nn.Module):
             return token_tensor, n_latent_used
         else:
             return token_tensor
+
+
+# ---------------------------------------------------------------------------
+# Halting Head Model
+# ---------------------------------------------------------------------------
+
+class HaltingHead(nn.Module):
+    def __init__(self, input_size: int, inner_size: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, inner_size),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(inner_size, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        """h: (batch, hidden_size) → (batch, 1) halt probability"""
+        return self.net(h)
