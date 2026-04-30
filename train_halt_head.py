@@ -7,20 +7,18 @@ position and predicts whether to halt (1) or continue (0).
 
 Usage:
     python train_halt_head.py \
-        --labels halt_labels/halt_labels.json \
+        --labels halt_labels/halt_labels.h5 \
         --output-dir halt_head/ \
         [--val-split 0.1] \
-        [--lambda-sparse 0.05] \
         [--hidden-size 128] \
         [--epochs 20] \
         [--lr 1e-3] \
         [--batch-size 256] \
-        [--seed 42]
+        [--seed 67]
 """
 
 import json
 import argparse
-import random
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -66,35 +64,16 @@ class HaltingHead(nn.Module):
 # ---------------------------------------------------------------------------
 
 class HaltDataset(Dataset):
-    def __init__(self, items: list[dict]):
-        """
-        Each item in items is a (hidden_state, label, pos, n_steps) tuple.
-        """
-        self.features = []
-        self.labels   = []
-        self.positions = []
-        self.n_steps  = []
-
-        for entry in items:
-            optimal_halt = entry["optimal_halt"]
-            n_steps      = entry["n_steps"]
-            hidden_states = entry["hidden_states"]  # list of N_LATENT lists
-
-            for i, pos in enumerate(POSITIONS):
-                h_idx = i + 1  # hidden state AFTER the last completed pass
-                if h_idx >= len(hidden_states):
-                    break
-                h     = torch.tensor(hidden_states[h_idx], dtype=torch.float32)
-                label = 1 if pos >= optimal_halt else 0
-                self.features.append(h)
-                self.labels.append(label)
-                self.positions.append(pos)
-                self.n_steps.append(n_steps)
-
-        self.features  = torch.stack(self.features)   # (N, hidden_size)
-        self.labels    = torch.tensor(self.labels, dtype=torch.float32)
-        self.positions = torch.tensor(self.positions, dtype=torch.float32)
-        self.n_steps   = torch.tensor(self.n_steps,  dtype=torch.long)
+    """Dataset loaded directly from flat HDF5 arrays."""
+    def __init__(self,
+                 features:  torch.Tensor,
+                 labels:    torch.Tensor,
+                 positions: torch.Tensor,
+                 n_steps:   torch.Tensor):
+        self.features  = features
+        self.labels    = labels
+        self.positions = positions
+        self.n_steps   = n_steps
 
     def __len__(self):
         return len(self.labels)
@@ -120,41 +99,51 @@ class HaltDataset(Dataset):
 # Data loading and splitting
 # ---------------------------------------------------------------------------
 
-def load_labels(path: str) -> list[dict]:
-    with open(path) as f:
-        data = json.load(f)
-    print(f"Loaded {len(data)} labeled samples from {path}")
-    return data
+def load_h5(path: str, val_split: float, seed: int) -> tuple:
+    """
+    Load flat HDF5 label file and split into train/val datasets.
+    Returns (train_dataset, val_dataset, meta) where meta is a dict of stats.
+    """
+    import h5py
+    print(f"Loading {path}...")
+    with h5py.File(path, "r") as f:
+        features  = torch.tensor(f["hidden_states"][:], dtype=torch.float32)
+        labels    = torch.tensor(f["labels"][:],        dtype=torch.float32)
+        positions = torch.tensor(f["positions"][:],     dtype=torch.float32)
+        n_steps   = torch.tensor(f["n_steps"][:],       dtype=torch.long)
+        n_pairs   = int(f.attrs.get("n_pairs",   len(labels)))
+        n_samples = int(f.attrs.get("n_samples", n_pairs // len(POSITIONS)))
 
+    print(f"  {n_pairs} training pairs from {n_samples} labeled samples")
 
-def train_val_split(data: list, val_split: float, seed: int) -> tuple:
-    rng = random.Random(seed)
-    shuffled = data.copy()
-    rng.shuffle(shuffled)
-    n_val = max(1, int(len(shuffled) * val_split))
-    return shuffled[n_val:], shuffled[:n_val]
+    # Shuffle pair indices (not sample-aware, but fine for MLP training)
+    rng = torch.Generator().manual_seed(seed)
+    perm = torch.randperm(n_pairs, generator=rng)
+    features  = features[perm]
+    labels    = labels[perm]
+    positions = positions[perm]
+    n_steps   = n_steps[perm]
 
+    n_val = max(1, int(n_pairs * val_split))
+    def split(t): return t[n_val:], t[:n_val]
 
-def print_dataset_stats(data: list, name: str) -> None:
-    optimal_halts = [d["optimal_halt"] for d in data]
-    n_steps_list  = [d["n_steps"] for d in data]
+    tr_f,  va_f  = split(features)
+    tr_l,  va_l  = split(labels)
+    tr_p,  va_p  = split(positions)
+    tr_ns, va_ns = split(n_steps)
 
-    halt_dist = defaultdict(int)
-    for h in optimal_halts:
-        halt_dist[h] += 1
+    train_ds = HaltDataset(tr_f,  tr_l,  tr_p,  tr_ns)
+    val_ds   = HaltDataset(va_f,  va_l,  va_p,  va_ns)
 
-    # Count label distribution
-    n_halt = sum(1 for d in data for pos in POSITIONS if pos >= d["optimal_halt"])
-    n_cont = sum(1 for d in data for pos in POSITIONS if pos < d["optimal_halt"])
+    # Print stats
+    for ds, name in [(train_ds, "Train"), (val_ds, "Val")]:
+        n_h = ds.labels.sum().int().item()
+        n_c = len(ds.labels) - n_h
+        print(f"\n{name} ({len(ds.labels)} pairs):")
+        print(f"  halt={n_h} ({n_h/len(ds.labels)*100:.1f}%)  "
+              f"continue={n_c} ({n_c/len(ds.labels)*100:.1f}%)")
 
-    print(f"\n{name} ({len(data)} samples, {n_halt+n_cont} training pairs):")
-    print(f"  Label distribution: halt={n_halt} ({n_halt/(n_halt+n_cont)*100:.1f}%), "
-          f"continue={n_cont} ({n_cont/(n_halt+n_cont)*100:.1f}%)")
-    print(f"  Optimal halt distribution:")
-    for k in sorted(halt_dist.keys()):
-        print(f"    halt@{k}: {halt_dist[k]} ({halt_dist[k]/len(data)*100:.1f}%)")
-    print(f"  Step count: mean={np.mean(n_steps_list):.1f}, "
-          f"min={min(n_steps_list)}, max={max(n_steps_list)}")
+    return train_ds, val_ds
 
 
 # ---------------------------------------------------------------------------
@@ -165,14 +154,11 @@ def train_epoch(
     model: HaltingHead,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
-    lambda_sparse: float,
     pos_weight: torch.Tensor,
     device: str,
 ) -> dict:
     model.train()
     total_loss = 0.0
-    total_bce  = 0.0
-    total_sparse = 0.0
     correct = 0
     total   = 0
 
@@ -181,38 +167,24 @@ def train_epoch(
     for features, labels, positions, _ in loader:
         features  = features.to(device)
         labels    = labels.to(device)
-        positions = positions.to(device)
 
         optimizer.zero_grad()
-        p_halt = model(features).squeeze(1)  # (batch,)
+        p_halt = model(features).squeeze(1)
 
-        # Weighted BCE: upweight the minority class
         weights = torch.where(labels == 1, pos_weight[1].to(device),
                               pos_weight[0].to(device))
-        bce  = (bce_fn(p_halt, labels) * weights).mean()
-
-        # Sparsity penalty: encourage halting at earlier positions
-        # normalized position in [0,1] range
-        pos_norm = (positions - MIN_LATENT_STEPS) / (N_LATENT - MIN_LATENT_STEPS)
-        sparse = (p_halt * pos_norm).mean()
-
-        loss = bce + lambda_sparse * sparse
+        loss = (bce_fn(p_halt, labels) * weights).mean()
         loss.backward()
         optimizer.step()
 
-        total_loss   += loss.item()
-        total_bce    += bce.item()
-        total_sparse += sparse.item()
-
+        total_loss += loss.item()
         preds   = (p_halt > 0.5).float()
         correct += (preds == labels).sum().item()
         total   += len(labels)
 
     return {
-        "loss":   total_loss / len(loader),
-        "bce":    total_bce  / len(loader),
-        "sparse": total_sparse / len(loader),
-        "acc":    correct / total,
+        "loss": total_loss / len(loader),
+        "acc":  correct / total,
     }
 
 
@@ -220,7 +192,6 @@ def train_epoch(
 def evaluate(
     model: HaltingHead,
     loader: DataLoader,
-    lambda_sparse: float,
     pos_weight: torch.Tensor,
     device: str,
 ) -> dict:
@@ -243,9 +214,7 @@ def evaluate(
 
         weights = torch.where(labels == 1, pos_weight[1].to(device),
                               pos_weight[0].to(device))
-        bce  = (bce_fn(p_halt, labels) * weights).mean()
-        pos_norm = (positions - MIN_LATENT_STEPS) / (N_LATENT - MIN_LATENT_STEPS)
-        loss = bce + lambda_sparse * (p_halt * pos_norm).mean()
+        loss = (bce_fn(p_halt, labels) * weights).mean()
         total_loss += loss.item()
 
         preds = (p_halt > 0.5).float()
@@ -275,90 +244,33 @@ def evaluate(
 
 
 # ---------------------------------------------------------------------------
-# Simulated inference: estimate avg latent steps on val set
-# ---------------------------------------------------------------------------
-
-@torch.no_grad()
-def simulate_halting(
-    model: HaltingHead,
-    val_data: list,
-    device: str,
-) -> dict:
-    """
-    Simulate the halting head's decisions on the val set.
-    Reports avg latent steps used and estimated accuracy preservation.
-    """
-    model.eval()
-    halt_positions = []
-    correct_at_halt = []
-
-    for entry in val_data:
-        optimal_halt = entry["optimal_halt"]
-        hidden_states = entry["hidden_states"]
-        correct_by_pos = entry["correct_by_pos"]
-
-        halted_at = N_LATENT  # default: use all steps
-        for i, pos in enumerate(POSITIONS):
-            h_idx = i + 1  # hidden state AFTER the last completed pass
-            if h_idx >= len(hidden_states):
-                break
-            h = torch.tensor(hidden_states[h_idx], dtype=torch.float32).unsqueeze(0).to(device)
-            p = model(h).item()
-            if p > 0.5:
-                halted_at = pos
-                break
-
-        halt_positions.append(halted_at)
-        correct_at_halt.append(correct_by_pos.get(str(halted_at), False))
-
-    avg_halt   = np.mean(halt_positions)
-    compute_saved = (N_LATENT - avg_halt) / N_LATENT * 100
-    accuracy_preserved = np.mean(correct_at_halt) * 100
-
-    return {
-        "avg_halt_pos":    avg_halt,
-        "compute_saved":   compute_saved,
-        "acc_at_halt_pos": accuracy_preserved,
-        "halt_dist": dict(zip(*np.unique(halt_positions, return_counts=True))),
-    }
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--labels",        required=True)
-    parser.add_argument("--output-dir",    default="halt_head")
-    parser.add_argument("--val-split",     type=float, default=0.1)
-    parser.add_argument("--lambda-sparse", type=float, default=0.05)
-    parser.add_argument("--hidden-size",   type=int,   default=128)
-    parser.add_argument("--epochs",        type=int,   default=20)
-    parser.add_argument("--lr",            type=float, default=1e-3)
-    parser.add_argument("--batch-size",    type=int,   default=256)
-    parser.add_argument("--seed",          type=int,   default=42)
-    parser.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--labels",      required=True,
+                        help="Path to halt_labels.h5 (HDF5 format)")
+    parser.add_argument("--output-dir",  default="halt_head")
+    parser.add_argument("--val-split",   type=float, default=0.1)
+    parser.add_argument("--hidden-size", type=int,   default=128)
+    parser.add_argument("--epochs",      type=int,   default=20)
+    parser.add_argument("--lr",          type=float, default=1e-3)
+    parser.add_argument("--batch-size",  type=int,   default=256)
+    parser.add_argument("--seed",        type=int,   default=42)
+    parser.add_argument("--device",      default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
-    random.seed(args.seed)
     torch.manual_seed(args.seed)
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Device: {args.device}")
-    print(f"Lambda sparse: {args.lambda_sparse}")
     print(f"MLP inner size: {args.hidden_size}")
 
-    # Load and split
-    data = load_labels(args.labels)
-    train_data, val_data = train_val_split(data, args.val_split, args.seed)
-    print_dataset_stats(train_data, "Train")
-    print_dataset_stats(val_data,   "Val")
-
-    train_ds = HaltDataset(train_data)
-    val_ds   = HaltDataset(val_data)
+    # Load data
+    train_ds, val_ds = load_h5(args.labels, args.val_split, args.seed)
 
     pos_weight = train_ds.class_weights()
     print(f"\nClass weights: continue={pos_weight[0]:.3f}, halt={pos_weight[1]:.3f}")
@@ -387,16 +299,14 @@ def main():
     best_epoch   = 0
     history      = []
 
-    print(f"\n{'='*70}")
+    print(f"\n{'='*60}")
     print(f"{'Epoch':>6}  {'TrLoss':>8}  {'TrAcc':>7}  "
           f"{'VaLoss':>8}  {'VaAcc':>7}  {'AUC':>7}")
-    print(f"{'-'*70}")
+    print(f"{'-'*60}")
 
     for epoch in range(1, args.epochs + 1):
-        tr = train_epoch(model, train_loader, optimizer,
-                         args.lambda_sparse, pos_weight, args.device)
-        va = evaluate(model, val_loader, args.lambda_sparse,
-                      pos_weight, args.device)
+        tr = train_epoch(model, train_loader, optimizer, pos_weight, args.device)
+        va = evaluate(model, val_loader, pos_weight, args.device)
         scheduler.step()
 
         history.append({"epoch": epoch, "train": tr, "val": va})
@@ -411,46 +321,32 @@ def main():
 
     print(f"\nBest epoch: {best_epoch} (val AUC={best_val_auc:.4f})")
 
-    # Load best and evaluate
-    model.load_state_dict(torch.load(out_dir / "halt_head_best.pt"))
-    va_final = evaluate(model, val_loader, args.lambda_sparse,
-                        pos_weight, args.device)
+    # Load best and report per-position accuracy
+    model.load_state_dict(torch.load(out_dir / "halt_head_best.pt",
+                                     map_location=args.device))
+    va_final = evaluate(model, val_loader, pos_weight, args.device)
 
     print(f"\nPer-position val accuracy (best model):")
     for pos, acc in va_final["pos_acc"].items():
-        print(f"  Position {pos}: {acc*100:.1f}%")
+        print(f"  Position {int(pos)}: {acc*100:.1f}%")
 
-    # Simulate halting on val set
-    sim = simulate_halting(model, val_data, args.device)
-    print(f"\nSimulated halting on val set:")
-    print(f"  Avg halt position:  {sim['avg_halt_pos']:.2f}/{N_LATENT}")
-    print(f"  Compute saved:      {sim['compute_saved']:.1f}%")
-    print(f"  Acc at halt pos:    {sim['acc_at_halt_pos']:.1f}%")
-    print(f"  Halt distribution:  {dict(sim['halt_dist'])}")
-
-    # Save everything
+    # Save
     torch.save(model.state_dict(), out_dir / "halt_head_final.pt")
     with open(out_dir / "training_history.json", "w") as f:
         json.dump({
-            "args": vars(args),
-            "best_epoch": best_epoch,
-            "best_val_auc": best_val_auc,
-            "history": history,
-            "final_val": va_final,
-            "simulation": {
-                k: ({str(kk): int(vv) for kk, vv in v.items()}
-                    if isinstance(v, dict)
-                    else float(v) if isinstance(v, (np.floating, np.integer))
-                    else v)
-                for k, v in sim.items()
-            },
-            "timestamp": datetime.now().isoformat(),
+            "args":          vars(args),
+            "best_epoch":    best_epoch,
+            "best_val_auc":  best_val_auc,
+            "history":       history,
+            "final_val":     va_final,
+            "timestamp":     datetime.now().isoformat(),
         }, f, indent=2, default=str)
 
     print(f"\nSaved to {out_dir}/")
-    print(f"  halt_head_best.pt    — best checkpoint (by val AUC)")
-    print(f"  halt_head_final.pt   — final epoch checkpoint")
+    print(f"  halt_head_best.pt     — best checkpoint (by val AUC)")
+    print(f"  halt_head_final.pt    — final epoch checkpoint")
     print(f"  training_history.json")
+    print(f"\nNote: run analyze_halting.py --halt-head to evaluate on the full val set.")
 
 
 if __name__ == "__main__":
